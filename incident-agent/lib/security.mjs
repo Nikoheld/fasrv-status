@@ -56,10 +56,12 @@ export function validateSeries(value) {
   return text;
 }
 
-function stringsFromJson(value, output = []) {
-  if (typeof value === "string") output.push(value);
-  else if (Array.isArray(value)) value.forEach((item) => stringsFromJson(item, output));
-  else if (value && typeof value === "object") Object.values(value).forEach((item) => stringsFromJson(item, output));
+const SENSITIVE_NAME = /(?:pass(?:word|wd)?|passwort|token|secret|api[ _-]?key|private[ _-]?key|credential|auth|cookie)/iu;
+
+function stringsFromJson(value, output = [], parentKey = "") {
+  if (typeof value === "string" && SENSITIVE_NAME.test(parentKey)) output.push(value);
+  else if (Array.isArray(value)) value.forEach((item) => stringsFromJson(item, output, parentKey));
+  else if (value && typeof value === "object") Object.entries(value).forEach(([key, item]) => stringsFromJson(item, output, key));
   return output;
 }
 
@@ -67,6 +69,8 @@ function stringsFromEnv(content) {
   return content.split(/\r?\n/u).flatMap((line) => {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) return [];
+    const key = trimmed.slice(0, trimmed.indexOf("=")).trim();
+    if (!SENSITIVE_NAME.test(key)) return [];
     let value = trimmed.slice(trimmed.indexOf("=") + 1).trim();
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
     return value ? [value] : [];
@@ -90,6 +94,8 @@ export class SecretScanner {
         const content = fs.readFileSync(file, "utf8");
         if (file.endsWith(".json")) {
           try { values.push(...stringsFromJson(JSON.parse(content))); } catch { /* ignored: generic rules still apply */ }
+        } else if (SENSITIVE_NAME.test(path.basename(file)) && !content.includes("=")) {
+          values.push(content.trim());
         } else {
           values.push(...stringsFromEnv(content));
         }

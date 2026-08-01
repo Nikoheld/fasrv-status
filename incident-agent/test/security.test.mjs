@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { detectPromptInjection, SecretScanner, validateDescription, validateSeries } from "../lib/security.mjs";
 
 test("accepts normal German incident descriptions", () => {
@@ -23,4 +26,15 @@ test("finds exact and generic secrets", () => {
   assert.equal(scanner.scan("value=correct horse battery staple"), "known_secret");
   assert.equal(scanner.scan("Authorization: Bearer abcdefghijklmnop"), "authorization_header");
   assert.equal(scanner.scan("ordinary fixed output"), null);
+});
+
+test("loads only sensitive values and plain token files", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "fasrv-secret-test-"));
+  fs.writeFileSync(path.join(directory, "service.env"), "SERVICE_HOST=public.example\nSERVICE_PASSWORD=private-value-123\n");
+  fs.writeFileSync(path.join(directory, "github-token"), "opaque-token-value-456\n");
+  const scanner = SecretScanner.fromPaths([directory]);
+  assert.equal(scanner.scan("public.example"), null);
+  assert.equal(scanner.scan("private-value-123"), "known_secret");
+  assert.equal(scanner.scan("opaque-token-value-456"), "known_secret");
+  fs.rmSync(directory, { recursive: true, force: true });
 });
