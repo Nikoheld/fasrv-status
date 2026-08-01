@@ -18,6 +18,7 @@ const promptDirectory = process.env.PROMPT_DIRECTORY ?? path.join(import.meta.di
 const repository = process.env.GITHUB_REPOSITORY ?? "Nikoheld/fasrv-status";
 const githubToken = fs.readFileSync(process.env.GITHUB_TOKEN_FILE ?? "/etc/fasrv-incident-agent/github-token", "utf8").trim();
 const grokBinary = process.env.GROK_BINARY ?? "/home/codexweb/.grok/bin/grok";
+const grokReasoningEffort = process.env.GROK_REASONING_EFFORT ?? "low";
 const jellyfinRemediationHelper = process.env.JELLYFIN_REMEDIATION_HELPER ?? "/usr/local/sbin/fasrv-jellyfin-remediate";
 const pollSeconds = Number(process.env.POLL_SECONDS ?? 30);
 const apps = JSON.parse(fs.readFileSync(appConfig, "utf8"));
@@ -26,6 +27,8 @@ const scanner = SecretScanner.fromPaths((process.env.SECRET_PATHS ?? "/srv/codex
 const controllerStateFile = path.join(stateDirectory, "controller.json");
 const freshControllerState = !fs.existsSync(controllerStateFile);
 let controllerState = readJson(controllerStateFile, { startedAt: new Date().toISOString(), seenIssues: [] });
+
+if (!new Set(["low", "medium", "high"]).has(grokReasoningEffort)) throw new Error("invalid_grok_reasoning_effort");
 
 ensureDirectory(queueDirectory, 0o770);
 ensureDirectory(eventDirectory, 0o770);
@@ -144,6 +147,7 @@ function runGrok(kind, prompt, schema) {
       "--no-memory",
       "--no-subagents",
       "--disable-web-search",
+      "--reasoning-effort", grokReasoningEffort,
       "--max-turns", "1",
       "--tools", ""
     ];
