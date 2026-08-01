@@ -68,4 +68,12 @@ test("admin API blocks, rejects cross-origin control, and unblocks", async (cont
   assert.deepEqual(await blocked.json(), { paused: true });
   const unblocked = await fetch(`${origin}/api/control`, { method: "POST", headers, body: JSON.stringify({ action: "unblock" }) });
   assert.deepEqual(await unblocked.json(), { paused: false });
+
+  const unsafeReport = "11111111-1111-4111-8111-111111111111.json";
+  fs.writeFileSync(path.join(stateDirectory, "processing", unsafeReport), "{}\n");
+  fs.writeFileSync(path.join(stateDirectory, "PAUSED"), JSON.stringify({ source: "summarizer", reasonCode: "model_marked_suspicious" }));
+  const securityUnblock = await fetch(`${origin}/api/control`, { method: "POST", headers, body: JSON.stringify({ action: "unblock" }) });
+  assert.deepEqual(await securityUnblock.json(), { paused: false });
+  assert.equal(fs.existsSync(path.join(stateDirectory, "processing", unsafeReport)), false);
+  assert.equal(fs.readdirSync(path.join(stateDirectory, "quarantine")).some((name) => name.endsWith(unsafeReport)), true);
 });

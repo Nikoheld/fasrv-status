@@ -2,16 +2,19 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { atomicWriteJson, readJson, readRequestBody } from "./lib/runtime.mjs";
+import { atomicWriteJson, ensureDirectory, readJson, readRequestBody } from "./lib/runtime.mjs";
 
 const stateDirectory = process.env.STATE_DIRECTORY ?? "/var/lib/fasrv-incident-agent";
 const eventDirectory = path.join(stateDirectory, "events");
 const queueDirectory = path.join(stateDirectory, "queue");
 const processingDirectory = path.join(stateDirectory, "processing");
+const quarantineDirectory = path.join(stateDirectory, "quarantine");
 const pauseFile = path.join(stateDirectory, "PAUSED");
 const staticDirectory = process.env.STATIC_DIRECTORY ?? path.join(import.meta.dirname, "admin");
 const port = Number(process.env.PORT ?? 8153);
 const controlToken = crypto.randomBytes(32).toString("base64url");
+
+ensureDirectory(quarantineDirectory, 0o770);
 
 const STATIC_FILES = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
@@ -83,6 +86,17 @@ function resumeManualWork(pause) {
   return resumed;
 }
 
+function quarantineUnsafeWork(pause) {
+  if (pause?.source === "manual_admin" || !fs.existsSync(processingDirectory)) return 0;
+  let quarantined = 0;
+  const prefix = `${Date.now()}-`;
+  for (const name of fs.readdirSync(processingDirectory).filter((file) => /^[0-9a-f-]{36}(?:\.state)?\.json$/u.test(file))) {
+    fs.renameSync(path.join(processingDirectory, name), path.join(quarantineDirectory, `${prefix}${name}`));
+    quarantined += 1;
+  }
+  return quarantined;
+}
+
 const server = http.createServer(async (request, response) => {
   try {
     if (!requestIsLocal(request)) return respond(response, 403, { error: "local_only" });
@@ -105,6 +119,7 @@ const server = http.createServer(async (request, response) => {
       } else if (payload.action === "unblock") {
         const pause = readPauseState();
         resumeManualWork(pause);
+        quarantineUnsafeWork(pause);
         fs.rmSync(pauseFile, { force: true });
       } else return respond(response, 400, { error: "invalid_action" });
       return respond(response, 200, { paused: fs.existsSync(pauseFile) });

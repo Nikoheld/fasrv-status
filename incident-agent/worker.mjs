@@ -8,6 +8,7 @@ import { detectPromptInjection, SecretScanner, validateDescription, validateSeri
 const stateDirectory = process.env.STATE_DIRECTORY ?? "/var/lib/fasrv-incident-agent";
 const queueDirectory = path.join(stateDirectory, "queue");
 const processingDirectory = path.join(stateDirectory, "processing");
+const quarantineDirectory = path.join(stateDirectory, "quarantine");
 const archiveDirectory = path.join(stateDirectory, "archive");
 const modelDirectory = path.join(stateDirectory, "model-output");
 const eventDirectory = path.join(stateDirectory, "events");
@@ -27,6 +28,7 @@ let controllerState = readJson(controllerStateFile, { startedAt: new Date().toIS
 ensureDirectory(queueDirectory, 0o770);
 ensureDirectory(eventDirectory, 0o770);
 ensureDirectory(processingDirectory, 0o770);
+ensureDirectory(quarantineDirectory, 0o770);
 for (const directory of [archiveDirectory, modelDirectory]) ensureDirectory(directory);
 let eventSequence = 0;
 
