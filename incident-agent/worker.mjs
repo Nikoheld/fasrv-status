@@ -169,7 +169,13 @@ function runGrok(kind, prompt, schema) {
 async function summarizeReport(report) {
   const description = validateDescription(report.description);
   const series = validateSeries(report.series);
-  const injection = detectPromptInjection(`${description}\n${series}`);
+  const untrustedInput = `${description}\n${series}`;
+  const secret = scanner.scan(untrustedInput);
+  if (secret) {
+    stopForSecurity(secret, "queued_report_secret_gate");
+    throw new Error("security_gate");
+  }
+  const injection = detectPromptInjection(untrustedInput);
   if (injection) {
     stopForSecurity(injection, "queued_report");
     throw new Error("security_gate");
@@ -322,7 +328,13 @@ async function pollIssues() {
     if (app) {
       await analyzeAndFix({ app, category: "availability", issueNumber: issue.number, incidentId: `upptime-${issue.number}`, source: "upptime" });
     } else if (new Date(issue.created_at) >= new Date(controllerState.startedAt)) {
-      const injection = detectPromptInjection(`${issue.title ?? ""}\n${issue.body ?? ""}`);
+      const untrustedIssue = `${issue.title ?? ""}\n${issue.body ?? ""}`;
+      const secret = scanner.scan(untrustedIssue);
+      if (secret) {
+        stopForSecurity(secret, "github_issue_secret_gate");
+        return;
+      }
+      const injection = detectPromptInjection(untrustedIssue);
       if (injection) {
         stopForSecurity(injection, "github_issue");
         return;
