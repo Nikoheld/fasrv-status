@@ -1,7 +1,7 @@
 url: https://jellyseerr.fasrv.ch/api/v1/status
-status: down
+status: up
 code: 403
-responseTime: 17
-lastUpdated: 2026-08-01T14:30:11.249Z
+responseTime: 113
+lastUpdated: 2026-08-01T14:36:50.759Z
 startTime: 2026-08-01T14:29:59.172Z
 generator: Upptime <https://github.com/upptime/upptime>
