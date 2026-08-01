@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Grok Incident Control</title>
+    <link rel="stylesheet" href="/admin.css">
+    <script src="/admin.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">FASRV</p>
+        <h1>Grok Incident Control</h1>
+      </div>
+      <div class="control">
+        <span id="pipeline-label">Wird geladen</span>
+        <label class="switch">
+          <input id="pipeline-toggle" type="checkbox" role="switch" aria-labelledby="pipeline-label" disabled>
+          <span aria-hidden="true"></span>
+        </label>
+      </div>
+    </header>
+
+    <div id="pause-banner" class="pause-banner" hidden>
+      <strong>Automatik blockiert</strong>
+      <span id="pause-detail"></span>
+    </div>
+
+    <main>
+      <section class="agent" aria-labelledby="intake-title">
+        <header class="agent__header">
+          <div>
+            <p class="agent__role">Eingang</p>
+            <h2 id="intake-title">Intake Grok</h2>
+          </div>
+          <span id="intake-state" class="state">Bereit</span>
+        </header>
+        <ol id="intake-events" class="timeline"></ol>
+      </section>
+
+      <section class="agent agent--fixer" aria-labelledby="fixer-title">
+        <header class="agent__header">
+          <div>
+            <p class="agent__role">Reparatur</p>
+            <h2 id="fixer-title">Fix Grok</h2>
+          </div>
+          <span id="fixer-state" class="state">Bereit</span>
+        </header>
+        <ol id="fixer-events" class="timeline"></ol>
+      </section>
+    </main>
+
+    <footer>
+      <span id="connection-state">Verbinde ...</span>
+      <time id="updated-at"></time>
+    </footer>
+  </body>
+</html>

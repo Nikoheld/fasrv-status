@@ -10,6 +10,7 @@ const queueDirectory = path.join(stateDirectory, "queue");
 const processingDirectory = path.join(stateDirectory, "processing");
 const archiveDirectory = path.join(stateDirectory, "archive");
 const modelDirectory = path.join(stateDirectory, "model-output");
+const eventDirectory = path.join(stateDirectory, "events");
 const appConfig = process.env.APP_CONFIG ?? "/etc/fasrv-incident-agent/apps.json";
 const promptDirectory = process.env.PROMPT_DIRECTORY ?? path.join(import.meta.dirname, "prompts");
 const repository = process.env.GITHUB_REPOSITORY ?? "Nikoheld/fasrv-status";
@@ -24,7 +25,10 @@ const freshControllerState = !fs.existsSync(controllerStateFile);
 let controllerState = readJson(controllerStateFile, { startedAt: new Date().toISOString(), seenIssues: [] });
 
 ensureDirectory(queueDirectory, 0o770);
-for (const directory of [processingDirectory, archiveDirectory, modelDirectory]) ensureDirectory(directory);
+ensureDirectory(eventDirectory, 0o770);
+ensureDirectory(processingDirectory, 0o770);
+for (const directory of [archiveDirectory, modelDirectory]) ensureDirectory(directory);
+let eventSequence = 0;
 
 const SUMMARY_SCHEMA = {
   type: "object",
@@ -83,6 +87,26 @@ function stopForSecurity(reason, source) {
   log("circuit_breaker_tripped", { reason, source });
 }
 
+function recordAgentEvent(agent, incidentId, stage, fields = {}) {
+  const event = {
+    time: new Date().toISOString(),
+    agent,
+    incidentId,
+    stage,
+    ...fields
+  };
+  const serialized = JSON.stringify(event);
+  if (scanner.scan(serialized)) {
+    stopForSecurity("event_secret_gate", "event_log");
+    throw new Error("security_gate");
+  }
+  eventSequence = (eventSequence + 1) % 1000000;
+  const filename = `${Date.now()}-${String(eventSequence).padStart(6, "0")}.json`;
+  atomicWriteJson(path.join(eventDirectory, filename), event, 0o640);
+  const files = fs.readdirSync(eventDirectory).filter((name) => name.endsWith(".json")).sort();
+  for (const stale of files.slice(0, Math.max(0, files.length - 500))) fs.unlinkSync(path.join(eventDirectory, stale));
+}
+
 async function github(pathname, options = {}) {
   const response = await fetch(`https://api.github.com/repos/${repository}${pathname}`, {
     ...options,
@@ -118,6 +142,7 @@ async function githubWrite(pathname, method, payload) {
 
 function runGrok(kind, prompt, schema) {
   return new Promise((resolve, reject) => {
+    if (isPaused(stateDirectory)) return reject(new Error("pipeline_paused"));
     const systemPrompt = fs.readFileSync(path.join(promptDirectory, `${kind}.txt`), "utf8");
     const args = [
       "-p", prompt,
@@ -137,12 +162,21 @@ function runGrok(kind, prompt, schema) {
     });
     let stdout = "";
     let stderr = "";
+    let pausedDuringRun = false;
     const timer = setTimeout(() => child.kill("SIGKILL"), 180000);
+    const pauseTimer = setInterval(() => {
+      if (isPaused(stateDirectory)) {
+        pausedDuringRun = true;
+        child.kill("SIGKILL");
+      }
+    }, 500);
     child.stdout.on("data", (chunk) => { if (stdout.length < 1048576) stdout += chunk; });
     child.stderr.on("data", (chunk) => { if (stderr.length < 1048576) stderr += chunk; });
     child.on("error", reject);
     child.on("close", (code) => {
       clearTimeout(timer);
+      clearInterval(pauseTimer);
+      if (pausedDuringRun) return reject(new Error("pipeline_paused"));
       const completeOutput = `${stdout}\n${stderr}`;
       const secret = scanner.scan(completeOutput);
       if (secret) {
@@ -181,12 +215,24 @@ async function summarizeReport(report) {
     throw new Error("security_gate");
   }
   const payload = JSON.stringify({ application: report.app, description, series: series || null });
-  const output = await runGrok("summarizer", `Classify this JSON data object:\n${payload}`, SUMMARY_SCHEMA);
-  if (output.result.suspicious) {
-    stopForSecurity("model_marked_suspicious", "summarizer");
-    throw new Error("security_gate");
+  recordAgentEvent("intake", report.id, "started", { app: report.app });
+  try {
+    const output = await runGrok("summarizer", `Classify this JSON data object:\n${payload}`, SUMMARY_SCHEMA);
+    if (output.result.suspicious) {
+      stopForSecurity("model_marked_suspicious", "summarizer");
+      throw new Error("security_gate");
+    }
+    recordAgentEvent("intake", report.id, "completed", {
+      app: report.app,
+      category: output.result.category,
+      severity: output.result.severity,
+      summary: output.result.internalSummary
+    });
+    return output;
+  } catch (error) {
+    recordAgentEvent("intake", report.id, "failed", { app: report.app, code: error.message });
+    throw error;
   }
-  return output;
 }
 
 async function probe(app) {
@@ -230,6 +276,7 @@ function executeAction(app, action) {
 async function verifyRecovery(app, category) {
   if (["playback", "content", "other"].includes(category)) return false;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
     if (attempt) await delay(5000);
     const result = await probe(app);
     if (!result.healthy || (category === "performance" && result.latencyMs >= 3000)) return false;
@@ -242,20 +289,33 @@ async function analyzeAndFix({ app, category, issueNumber, incidentId, source })
   const facts = localFacts(app, initialProbe);
   const allowedActions = app.allowedActions;
   const prompt = JSON.stringify({ application: app.slug, category, source, facts, allowedActions });
-  const output = await runGrok("fixer", `Choose a remediation for this trusted controller object:\n${prompt}`, FIX_SCHEMA);
-  if (!allowedActions.includes(output.result.action)) throw new Error("model_action_not_allowed");
-  atomicWriteJson(path.join(modelDirectory, `${incidentId}-fixer.json`), { result: output.result, recordedAt: new Date().toISOString() });
-  executeAction(app, output.result.action);
-  if (output.result.action !== "no_action") await delay(10000);
-  if (!(await verifyRecovery(app, category))) {
-    log("recovery_not_verified", { app: app.slug, issueNumber });
-    return false;
+  recordAgentEvent("fixer", incidentId, "started", { app: app.slug, category, source, issueNumber, facts });
+  try {
+    const output = await runGrok("fixer", `Choose a remediation for this trusted controller object:\n${prompt}`, FIX_SCHEMA);
+    if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
+    if (!allowedActions.includes(output.result.action)) throw new Error("model_action_not_allowed");
+    atomicWriteJson(path.join(modelDirectory, `${incidentId}-fixer.json`), { result: output.result, recordedAt: new Date().toISOString() });
+    recordAgentEvent("fixer", incidentId, "decision", { app: app.slug, issueNumber, ...output.result });
+    executeAction(app, output.result.action);
+    recordAgentEvent("fixer", incidentId, "action", { app: app.slug, issueNumber, action: output.result.action });
+    if (output.result.action !== "no_action") await delay(10000);
+    const verified = await verifyRecovery(app, category);
+    recordAgentEvent("fixer", incidentId, "verification", { app: app.slug, issueNumber, verified });
+    if (!verified) {
+      log("recovery_not_verified", { app: app.slug, issueNumber });
+      return false;
+    }
+    if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
+    const comment = `${PROBLEM_TEXT[output.result.problemCode]}\n${FIX_TEXT[output.result.fixCode]}\n\nSolved by: Grok 4.5`;
+    await githubWrite(`/issues/${issueNumber}/comments`, "POST", { body: comment });
+    if (source === "public_form") await githubWrite(`/issues/${issueNumber}`, "PATCH", { state: "closed", state_reason: "completed" });
+    recordAgentEvent("fixer", incidentId, "completed", { app: app.slug, issueNumber, action: output.result.action });
+    log("incident_solved", { app: app.slug, issueNumber, action: output.result.action });
+    return true;
+  } catch (error) {
+    recordAgentEvent("fixer", incidentId, "failed", { app: app.slug, issueNumber, code: error.message });
+    throw error;
   }
-  const comment = `${PROBLEM_TEXT[output.result.problemCode]}\n${FIX_TEXT[output.result.fixCode]}\n\nSolved by: Grok 4.5`;
-  await githubWrite(`/issues/${issueNumber}/comments`, "POST", { body: comment });
-  if (source === "public_form") await githubWrite(`/issues/${issueNumber}`, "PATCH", { state: "closed", state_reason: "completed" });
-  log("incident_solved", { app: app.slug, issueNumber, action: output.result.action });
-  return true;
 }
 
 function safeReportIssue(app, summary, id) {
@@ -276,20 +336,34 @@ function safeReportIssue(app, summary, id) {
   };
 }
 
+async function findExistingReportIssue(app, id) {
+  const issues = await github(`/issues?state=all&labels=user-report,${encodeURIComponent(app.slug)}&per_page=100`);
+  const marker = `<!-- fasrv-report:v1:${id} -->`;
+  return issues.find((issue) => !issue.pull_request && issue.body?.includes(marker)) ?? null;
+}
+
 async function processQueueFile(file) {
   if (isPaused(stateDirectory)) return;
   const claimed = path.join(processingDirectory, path.basename(file));
   try { fs.renameSync(file, claimed); } catch { return; }
   const report = readJson(claimed);
+  const workflowStateFile = path.join(processingDirectory, `${path.basename(file, ".json")}.state.json`);
   try {
     if (!report || !appBySlug.has(report.app)) throw new Error("invalid_queued_report");
-    const summaryOutput = await summarizeReport(report);
-    atomicWriteJson(path.join(modelDirectory, `${report.id}-summarizer.json`), { result: summaryOutput.result, recordedAt: new Date().toISOString() });
     const app = appBySlug.get(report.app);
-    const issue = await githubWrite("/issues", "POST", safeReportIssue(app, summaryOutput.result, report.id));
-    const solved = await analyzeAndFix({ app, category: summaryOutput.result.category, issueNumber: issue.number, incidentId: report.id, source: "public_form" });
-    atomicWriteJson(path.join(archiveDirectory, `${report.id}.json`), { ...report, summary: summaryOutput.result, issueNumber: issue.number, solved, processedAt: new Date().toISOString() });
+    let workflowState = readJson(workflowStateFile);
+    if (!workflowState?.summary || !workflowState?.issueNumber) {
+      const summaryOutput = await summarizeReport(report);
+      atomicWriteJson(path.join(modelDirectory, `${report.id}-summarizer.json`), { result: summaryOutput.result, recordedAt: new Date().toISOString() });
+      const existingIssue = await findExistingReportIssue(app, report.id);
+      const issue = existingIssue ?? await githubWrite("/issues", "POST", safeReportIssue(app, summaryOutput.result, report.id));
+      workflowState = { summary: summaryOutput.result, issueNumber: issue.number, stage: "issue_created" };
+      atomicWriteJson(workflowStateFile, workflowState);
+    }
+    const solved = await analyzeAndFix({ app, category: workflowState.summary.category, issueNumber: workflowState.issueNumber, incidentId: report.id, source: "public_form" });
+    atomicWriteJson(path.join(archiveDirectory, `${report.id}.json`), { ...report, summary: workflowState.summary, issueNumber: workflowState.issueNumber, solved, processedAt: new Date().toISOString() });
     fs.unlinkSync(claimed);
+    fs.rmSync(workflowStateFile, { force: true });
   } catch (error) {
     log("report_processing_failed", { reportId: report?.id ?? "invalid", code: error.message });
     if (!isPaused(stateDirectory)) fs.renameSync(claimed, path.join(queueDirectory, path.basename(claimed)));

@@ -71,7 +71,7 @@ export function tripCircuitBreaker(stateDirectory, reasonCode, source) {
   ensureDirectory(stateDirectory);
   const pauseFile = path.join(stateDirectory, "PAUSED");
   if (!fs.existsSync(pauseFile)) {
-    atomicWriteJson(pauseFile, { pausedAt: new Date().toISOString(), reasonCode, source });
+    atomicWriteJson(pauseFile, { pausedAt: new Date().toISOString(), reasonCode, source }, 0o640);
     sendAlertEmail(reasonCode, source);
   }
 }

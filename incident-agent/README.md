@@ -13,3 +13,9 @@ This service connects Upptime and the public status report form to two isolated 
 - Any prompt-injection or secret finding creates `PAUSED`, sends an email to the administrator, and blocks the API, model calls, remediation, and GitHub writes.
 
 The design does not claim that a language model can recognize every possible malicious sentence. Instead it removes the model's ability to disclose data or create arbitrary public content even if semantic classification fails.
+
+## Local control dashboard
+
+The dashboard listens only on the server loopback interface and is exposed to the administrator laptop through a restricted SSH local-forward account. It is available on the laptop at `http://127.0.0.1:8153`.
+
+It shows sanitized lifecycle events for the intake and remediation Grok processes. Raw reports, complete model output, reasoning, credentials, and GitHub tokens are never exposed. The pipeline switch creates or removes the fail-closed `PAUSED` state. Blocking terminates a running Grok process; manually interrupted queue work is resumed without creating a duplicate issue.
