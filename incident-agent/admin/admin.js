@@ -30,7 +30,9 @@
     no_action: "Kein Eingriff",
     restart_origin: "Dienst neu starten",
     reload_proxy: "Proxy neu laden",
-    restart_tunnel: "Verbindung neu starten"
+    restart_tunnel: "Verbindung neu starten",
+    refresh_jellyfin_images: "Bilder und Metadaten aktualisieren",
+    requeue_hianime: "Anime-Download erneut einreihen"
   };
 
   const problemLabels = {
@@ -38,6 +40,8 @@
     slow: "Antwort zu langsam",
     proxy: "Proxy gestört",
     origin: "Anwendungsdienst gestört",
+    image_metadata: "Bilder oder Metadaten fehlerhaft",
+    anime_download: "Anime-Download fehlgeschlagen",
     unknown: "Ursache nicht eindeutig"
   };
 
@@ -45,7 +49,9 @@
     recovered: "Ohne Eingriff erholt",
     restarted: "Dienst neu gestartet",
     proxy_reloaded: "Proxy neu geladen",
-    tunnel_restarted: "Verbindung neu aufgebaut",
+    image_refresh_started: "Bildaktualisierung gestartet",
+    anime_requeued: "Download erneut eingereiht",
+    not_executed: "Nicht automatisch ausgeführt",
     no_change: "Keine Änderung"
   };
 
@@ -54,7 +60,9 @@
     container: "Anwendungs-Container",
     systemd_service: "Anwendungsdienst",
     nginx_proxy: "Nginx-Proxy",
-    cloudflare_tunnel: "Cloudflare-Tunnel"
+    cloudflare_tunnel: "Cloudflare-Tunnel",
+    jellyfin_library: "Jellyfin-Bibliothek",
+    hianime_queue: "HiAnime-Warteschlange"
   };
 
   const securityCheckLabels = {
@@ -68,6 +76,8 @@
     login: "Anmeldung",
     playback: "Wiedergabe",
     performance: "Geschwindigkeit",
+    images: "Bilder und Metadaten",
+    anime_download: "Anime-Download",
     content: "Inhalt",
     other: "Allgemeine Störung"
   };
@@ -82,6 +92,13 @@
     security_gate: "Durch Sicherheitsbarriere gestoppt",
     pipeline_paused: "Durch Administrator gestoppt",
     recovery_not_verified: "Wiederherstellung nicht bestätigt"
+  };
+
+  const noActionLabels = {
+    unsupported_application: "Automatische Reparaturen sind auf Jellyfin begrenzt",
+    unsupported_category: "Fehlerklasse ist nicht für automatische Reparaturen freigegeben",
+    missing_series: "Für den erneuten Download fehlt der Serienname",
+    insufficient_evidence: "Kein sicherer Eingriff durch die Diagnose begründet"
   };
 
   function formatTime(value) {
@@ -104,6 +121,7 @@
     if (event.problemCode) lines.push({ label: "Diagnose", value: problemLabels[event.problemCode] ?? event.problemCode });
     if (event.fixCode) lines.push({ label: "Erwartetes Ergebnis", value: fixLabels[event.fixCode] ?? event.fixCode });
     if (event.action) lines.push({ label: "Aktion", value: actionLabels[event.action] ?? event.action });
+    if (event.noActionReason) lines.push({ label: "Nicht ausgeführt", value: noActionLabels[event.noActionReason] ?? event.noActionReason });
     if (event.target) lines.push({ label: "Ziel", value: targetLabels[event.target] ?? event.target });
     if (event.issueNumber) lines.push({ label: "Issue", value: `#${event.issueNumber}` });
     if (event.facts) {

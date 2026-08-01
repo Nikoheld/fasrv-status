@@ -5,6 +5,6 @@
     "url": "https://jellyfin.fasrv.ch/health",
     "expectedStatusCodes": [200],
     "container": "jellyfin",
-    "allowedActions": ["no_action", "restart_origin", "reload_proxy"]
+    "allowedActions": ["no_action", "restart_origin", "reload_proxy", "refresh_jellyfin_images", "requeue_hianime"]
   }
 ]

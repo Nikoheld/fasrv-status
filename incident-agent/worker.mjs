@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { atomicWriteJson, ensureDirectory, isPaused, readJson, tripCircuitBreaker } from "./lib/runtime.mjs";
 import { detectPromptInjection, SecretScanner, validateDescription, validateSeries } from "./lib/security.mjs";
+import { allowedActionsFor, isSecurityInterruption, noActionReasonFor, outcomeComment, outcomeMarker } from "./lib/remediation.mjs";
 
 const stateDirectory = process.env.STATE_DIRECTORY ?? "/var/lib/fasrv-incident-agent";
 const queueDirectory = path.join(stateDirectory, "queue");
@@ -17,6 +18,7 @@ const promptDirectory = process.env.PROMPT_DIRECTORY ?? path.join(import.meta.di
 const repository = process.env.GITHUB_REPOSITORY ?? "Nikoheld/fasrv-status";
 const githubToken = fs.readFileSync(process.env.GITHUB_TOKEN_FILE ?? "/etc/fasrv-incident-agent/github-token", "utf8").trim();
 const grokBinary = process.env.GROK_BINARY ?? "/home/codexweb/.grok/bin/grok";
+const jellyfinRemediationHelper = process.env.JELLYFIN_REMEDIATION_HELPER ?? "/usr/local/sbin/fasrv-jellyfin-remediate";
 const pollSeconds = Number(process.env.POLL_SECONDS ?? 30);
 const apps = JSON.parse(fs.readFileSync(appConfig, "utf8"));
 const appBySlug = new Map(apps.map((app) => [app.slug, app]));
@@ -37,7 +39,7 @@ const SUMMARY_SCHEMA = {
   additionalProperties: false,
   required: ["category", "severity", "suspicious", "internalSummary", "classificationBasis"],
   properties: {
-    category: { type: "string", enum: ["availability", "login", "playback", "performance", "content", "other"] },
+    category: { type: "string", enum: ["availability", "login", "playback", "performance", "images", "anime_download", "content", "other"] },
     severity: { type: "string", enum: ["low", "medium", "high"] },
     suspicious: { type: "boolean" },
     internalSummary: { type: "string", minLength: 1, maxLength: 160 },
@@ -50,9 +52,9 @@ const FIX_SCHEMA = {
   additionalProperties: false,
   required: ["action", "problemCode", "fixCode", "decisionSummary"],
   properties: {
-    action: { type: "string", enum: ["no_action", "restart_origin", "reload_proxy", "restart_tunnel"] },
-    problemCode: { type: "string", enum: ["unavailable", "slow", "proxy", "origin", "unknown"] },
-    fixCode: { type: "string", enum: ["recovered", "restarted", "proxy_reloaded", "tunnel_restarted", "no_change"] },
+    action: { type: "string", enum: ["no_action", "restart_origin", "reload_proxy", "refresh_jellyfin_images", "requeue_hianime"] },
+    problemCode: { type: "string", enum: ["unavailable", "slow", "proxy", "origin", "image_metadata", "anime_download", "unknown"] },
+    fixCode: { type: "string", enum: ["recovered", "restarted", "proxy_reloaded", "image_refresh_started", "anime_requeued", "not_executed", "no_change"] },
     decisionSummary: { type: "string", minLength: 1, maxLength: 220 }
   }
 };
@@ -62,24 +64,10 @@ const CATEGORY_LABELS = {
   login: "Anmeldung",
   playback: "Wiedergabe",
   performance: "Geschwindigkeit",
+  images: "Bilder und Metadaten",
+  anime_download: "Anime-Download",
   content: "Inhalt",
   other: "Allgemeine Störung"
-};
-
-const PROBLEM_TEXT = {
-  unavailable: "Der Dienst war nicht erreichbar.",
-  slow: "Der Dienst reagierte zu langsam.",
-  proxy: "Die Weiterleitung zum Dienst war gestört.",
-  origin: "Der Anwendungsdienst war nicht betriebsbereit.",
-  unknown: "Die gemeldete Störung wurde technisch geprüft."
-};
-
-const FIX_TEXT = {
-  recovered: "Der Dienst hat sich erholt und wurde erfolgreich geprüft.",
-  restarted: "Der betroffene Dienst wurde neu gestartet und erfolgreich geprüft.",
-  proxy_reloaded: "Die Weiterleitung wurde neu geladen und erfolgreich geprüft.",
-  tunnel_restarted: "Die externe Verbindung wurde neu aufgebaut und erfolgreich geprüft.",
-  no_change: "Es war kein Eingriff nötig; der Dienst wurde erfolgreich geprüft."
 };
 
 function log(event, fields = {}) {
@@ -268,30 +256,47 @@ function localFacts(app, publicProbe) {
   return facts;
 }
 
-function executeAction(app, action) {
+function executeAction(app, action, series) {
   if (!app.allowedActions.includes(action)) throw new Error("action_not_allowed");
-  if (action === "no_action") return;
+  if (action === "no_action") return { accepted: true, target: "none", latencyMs: 0 };
+  const started = Date.now();
   let result;
   if (action === "restart_origin" && app.container) result = spawnSync("sudo", ["-n", "docker", "restart", app.container], { stdio: "ignore", timeout: 120000 });
   else if (action === "restart_origin" && app.unit) result = spawnSync("sudo", ["-n", "systemctl", "restart", app.unit], { stdio: "ignore", timeout: 120000 });
   else if (action === "reload_proxy") {
     if (spawnSync("sudo", ["-n", "nginx", "-t"], { stdio: "ignore" }).status !== 0) throw new Error("nginx_config_invalid");
     result = spawnSync("sudo", ["-n", "systemctl", "reload", "nginx"], { stdio: "ignore", timeout: 30000 });
-  } else if (action === "restart_tunnel" && app.tunnelUnit) result = spawnSync("sudo", ["-n", "systemctl", "restart", app.tunnelUnit], { stdio: "ignore", timeout: 120000 });
-  else throw new Error("action_unavailable");
+  } else if (action === "refresh_jellyfin_images" || action === "requeue_hianime") {
+    const helperAction = action === "refresh_jellyfin_images" ? "refresh-images" : "requeue-hianime";
+    result = spawnSync("sudo", ["-n", jellyfinRemediationHelper, helperAction, series], { encoding: "utf8", timeout: 120000 });
+    if (result.status !== 0) {
+      const code = readJsonFromString(result.stdout)?.code;
+      const allowedCodes = new Set(["hianime_match_not_found", "jellyfin_item_not_found"]);
+      throw new Error(allowedCodes.has(code) ? code : "helper_failed");
+    }
+  } else throw new Error("action_unavailable");
   if (result.status !== 0) throw new Error("action_failed");
+  return { accepted: true, target: actionTarget(app, action), latencyMs: Date.now() - started };
+}
+
+function readJsonFromString(value) {
+  try { return JSON.parse(String(value ?? "")); } catch { return null; }
 }
 
 function actionTarget(app, action) {
   if (action === "restart_origin") return app.container ? "container" : "systemd_service";
   if (action === "reload_proxy") return "nginx_proxy";
-  if (action === "restart_tunnel") return "cloudflare_tunnel";
+  if (action === "refresh_jellyfin_images") return "jellyfin_library";
+  if (action === "requeue_hianime") return "hianime_queue";
   return "none";
 }
 
-async function verifyRecovery(app, category) {
+async function verifyRecovery(app, category, action, actionResult) {
   const checks = [];
-  if (["playback", "content", "other"].includes(category)) return { verified: false, checks };
+  if (action === "requeue_hianime") {
+    checks.push({ attempt: 1, healthy: Boolean(actionResult?.accepted), status: actionResult?.accepted ? 202 : 0, latencyMs: actionResult?.latencyMs ?? 0 });
+    return { verified: Boolean(actionResult?.accepted), checks };
+  }
   for (let attempt = 0; attempt < 3; attempt += 1) {
     if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
     if (attempt) await delay(5000);
@@ -302,24 +307,57 @@ async function verifyRecovery(app, category) {
   return { verified: true, checks };
 }
 
-async function analyzeAndFix({ app, category, issueNumber, incidentId, source }) {
+async function githubCommentOnce(issueNumber, incidentId, body) {
+  const marker = outcomeMarker(incidentId);
+  const comments = await github(`/issues/${issueNumber}/comments?per_page=100`);
+  if (comments.some((comment) => String(comment.body ?? "").includes(marker))) return false;
+  await githubWrite(`/issues/${issueNumber}/comments`, "POST", { body });
+  return true;
+}
+
+function publicFailureCode(code) {
+  const allowed = new Set(["action_failed", "helper_failed", "hianime_match_not_found", "jellyfin_item_not_found", "recovery_not_verified"]);
+  return allowed.has(code) ? code : "helper_failed";
+}
+
+async function analyzeAndFix({ app, category, issueNumber, incidentId, source, series = "" }) {
   const initialProbe = await probe(app);
   const facts = localFacts(app, initialProbe);
-  const allowedActions = app.allowedActions;
-  const prompt = JSON.stringify({ application: app.slug, category, source, facts, allowedActions });
+  const hasSeries = Boolean(series);
+  const allowedActions = allowedActionsFor(app, category, hasSeries);
+  const prompt = JSON.stringify({ application: app.slug, category, source, facts, allowedActions, scope: { jellyfinOnly: true, seriesProvided: hasSeries } });
   recordAgentEvent("fixer", incidentId, "started", { app: app.slug, category, source, issueNumber, facts });
   try {
-    const output = await runGrok("fixer", `Choose a remediation for this trusted controller object:\n${prompt}`, FIX_SCHEMA);
+    const modelFile = path.join(modelDirectory, `${incidentId}-fixer.json`);
+    const cachedModel = readJson(modelFile);
+    const output = cachedModel?.result
+      ? { result: cachedModel.result }
+      : await runGrok("fixer", `Choose a remediation for this trusted controller object:\n${prompt}`, FIX_SCHEMA);
     if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
     if (!allowedActions.includes(output.result.action)) throw new Error("model_action_not_allowed");
-    atomicWriteJson(path.join(modelDirectory, `${incidentId}-fixer.json`), { result: output.result, recordedAt: new Date().toISOString() });
+    if (!cachedModel?.result) atomicWriteJson(modelFile, { result: output.result, recordedAt: new Date().toISOString() });
+    const noActionReason = output.result.action === "no_action" ? noActionReasonFor(app, category, hasSeries) : null;
     recordAgentEvent("fixer", incidentId, "decision", {
       app: app.slug,
       issueNumber,
       ...output.result,
+      noActionReason,
       reasoningSummary: output.result.decisionSummary
     });
-    executeAction(app, output.result.action);
+    if (output.result.action === "no_action") {
+      recordAgentEvent("fixer", incidentId, "action", { app: app.slug, issueNumber, action: "no_action", target: "none", noActionReason });
+      await githubCommentOnce(issueNumber, incidentId, outcomeComment({ action: "no_action", incidentId, noActionReason }));
+      recordAgentEvent("fixer", incidentId, "completed", { app: app.slug, issueNumber, action: "no_action", outcome: "not_executed" });
+      return false;
+    }
+    const receiptFile = path.join(modelDirectory, `${incidentId}-action.json`);
+    const receipt = readJson(receiptFile);
+    const actionResult = receipt?.action === output.result.action
+      ? receipt.result
+      : executeAction(app, output.result.action, series);
+    if (receipt?.action !== output.result.action) {
+      atomicWriteJson(receiptFile, { action: output.result.action, result: actionResult, recordedAt: new Date().toISOString() });
+    }
     recordAgentEvent("fixer", incidentId, "action", {
       app: app.slug,
       issueNumber,
@@ -327,23 +365,29 @@ async function analyzeAndFix({ app, category, issueNumber, incidentId, source })
       target: actionTarget(app, output.result.action)
     });
     if (output.result.action !== "no_action") await delay(10000);
-    const verification = await verifyRecovery(app, category);
+    const verification = await verifyRecovery(app, category, output.result.action, actionResult);
     recordAgentEvent("fixer", incidentId, "verification", { app: app.slug, issueNumber, ...verification });
     if (!verification.verified) {
       log("recovery_not_verified", { app: app.slug, issueNumber });
+      await githubCommentOnce(issueNumber, incidentId, outcomeComment({ action: output.result.action, incidentId, failureCode: "recovery_not_verified" }));
       recordAgentEvent("fixer", incidentId, "failed", { app: app.slug, issueNumber, code: "recovery_not_verified" });
       return false;
     }
     if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
-    const comment = `${PROBLEM_TEXT[output.result.problemCode]}\n${FIX_TEXT[output.result.fixCode]}\n\nSolved by: Grok 4.5`;
-    await githubWrite(`/issues/${issueNumber}/comments`, "POST", { body: comment });
+    await githubCommentOnce(issueNumber, incidentId, outcomeComment({ action: output.result.action, incidentId }));
     if (source === "public_form") await githubWrite(`/issues/${issueNumber}`, "PATCH", { state: "closed", state_reason: "completed" });
     recordAgentEvent("fixer", incidentId, "completed", { app: app.slug, issueNumber, action: output.result.action });
     log("incident_solved", { app: app.slug, issueNumber, action: output.result.action });
     return true;
   } catch (error) {
     recordAgentEvent("fixer", incidentId, "failed", { app: app.slug, issueNumber, code: error.message });
-    throw error;
+    if (isSecurityInterruption(error.message) || isPaused(stateDirectory)) throw error;
+    await githubCommentOnce(issueNumber, incidentId, outcomeComment({
+      action: "no_action",
+      incidentId,
+      failureCode: publicFailureCode(error.message)
+    }));
+    return false;
   }
 }
 
@@ -389,7 +433,7 @@ async function processQueueFile(file) {
       workflowState = { summary: summaryOutput.result, issueNumber: issue.number, stage: "issue_created" };
       atomicWriteJson(workflowStateFile, workflowState);
     }
-    const solved = await analyzeAndFix({ app, category: workflowState.summary.category, issueNumber: workflowState.issueNumber, incidentId: report.id, source: "public_form" });
+    const solved = await analyzeAndFix({ app, category: workflowState.summary.category, issueNumber: workflowState.issueNumber, incidentId: report.id, source: "public_form", series: validateSeries(report.series) });
     atomicWriteJson(path.join(archiveDirectory, `${report.id}.json`), { ...report, summary: workflowState.summary, issueNumber: workflowState.issueNumber, solved, processedAt: new Date().toISOString() });
     fs.unlinkSync(claimed);
     fs.rmSync(workflowStateFile, { force: true });
