@@ -51,6 +51,7 @@ assignees:
   - Nikoheld
 
 skipDeleteIssues: true
+secrets: []
 
 status-website:
   cname: status.fasrv.ch
@@ -58,6 +59,13 @@ status-website:
   name: FASRV Status
   introTitle: "**FASRV** service status"
   introMessage: Live availability, response times, and incident history for FASRV services.
+  customFootHtml: '<div id="fasrv-report-root"></div>'
+  scripts:
+    - src: https://status.fasrv.ch/report-form.js
+      defer: true
+  links:
+    - rel: stylesheet
+      href: https://status.fasrv.ch/report-form.css
   navbar:
     - title: Status
       href: /

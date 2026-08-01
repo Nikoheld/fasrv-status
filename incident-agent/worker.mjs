@@ -1,0 +1,350 @@
+import fs from "node:fs";
+import path from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
+import { atomicWriteJson, ensureDirectory, isPaused, readJson, tripCircuitBreaker } from "./lib/runtime.mjs";
+import { detectPromptInjection, SecretScanner, validateDescription, validateSeries } from "./lib/security.mjs";
+
+const stateDirectory = process.env.STATE_DIRECTORY ?? "/var/lib/fasrv-incident-agent";
+const queueDirectory = path.join(stateDirectory, "queue");
+const processingDirectory = path.join(stateDirectory, "processing");
+const archiveDirectory = path.join(stateDirectory, "archive");
+const modelDirectory = path.join(stateDirectory, "model-output");
+const appConfig = process.env.APP_CONFIG ?? "/etc/fasrv-incident-agent/apps.json";
+const promptDirectory = process.env.PROMPT_DIRECTORY ?? path.join(import.meta.dirname, "prompts");
+const repository = process.env.GITHUB_REPOSITORY ?? "Nikoheld/fasrv-status";
+const githubToken = fs.readFileSync(process.env.GITHUB_TOKEN_FILE ?? "/etc/fasrv-incident-agent/github-token", "utf8").trim();
+const grokBinary = process.env.GROK_BINARY ?? "/home/codexweb/.grok/bin/grok";
+const pollSeconds = Number(process.env.POLL_SECONDS ?? 30);
+const apps = JSON.parse(fs.readFileSync(appConfig, "utf8"));
+const appBySlug = new Map(apps.map((app) => [app.slug, app]));
+const scanner = SecretScanner.fromPaths((process.env.SECRET_PATHS ?? "/srv/codex-web/shared-credentials:/home/codexweb/.grok/auth.json:/etc/fasrv-incident-agent/github-token").split(":"));
+const controllerStateFile = path.join(stateDirectory, "controller.json");
+const freshControllerState = !fs.existsSync(controllerStateFile);
+let controllerState = readJson(controllerStateFile, { startedAt: new Date().toISOString(), seenIssues: [] });
+
+ensureDirectory(queueDirectory, 0o770);
+for (const directory of [processingDirectory, archiveDirectory, modelDirectory]) ensureDirectory(directory);
+
+const SUMMARY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["category", "severity", "suspicious", "internalSummary"],
+  properties: {
+    category: { type: "string", enum: ["availability", "login", "playback", "performance", "content", "other"] },
+    severity: { type: "string", enum: ["low", "medium", "high"] },
+    suspicious: { type: "boolean" },
+    internalSummary: { type: "string", minLength: 1, maxLength: 160 }
+  }
+};
+
+const FIX_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["action", "problemCode", "fixCode"],
+  properties: {
+    action: { type: "string", enum: ["no_action", "restart_origin", "reload_proxy", "restart_tunnel"] },
+    problemCode: { type: "string", enum: ["unavailable", "slow", "proxy", "origin", "unknown"] },
+    fixCode: { type: "string", enum: ["recovered", "restarted", "proxy_reloaded", "tunnel_restarted", "no_change"] }
+  }
+};
+
+const CATEGORY_LABELS = {
+  availability: "Erreichbarkeit",
+  login: "Anmeldung",
+  playback: "Wiedergabe",
+  performance: "Geschwindigkeit",
+  content: "Inhalt",
+  other: "Allgemeine Störung"
+};
+
+const PROBLEM_TEXT = {
+  unavailable: "Der Dienst war nicht erreichbar.",
+  slow: "Der Dienst reagierte zu langsam.",
+  proxy: "Die Weiterleitung zum Dienst war gestört.",
+  origin: "Der Anwendungsdienst war nicht betriebsbereit.",
+  unknown: "Die gemeldete Störung wurde technisch geprüft."
+};
+
+const FIX_TEXT = {
+  recovered: "Der Dienst hat sich erholt und wurde erfolgreich geprüft.",
+  restarted: "Der betroffene Dienst wurde neu gestartet und erfolgreich geprüft.",
+  proxy_reloaded: "Die Weiterleitung wurde neu geladen und erfolgreich geprüft.",
+  tunnel_restarted: "Die externe Verbindung wurde neu aufgebaut und erfolgreich geprüft.",
+  no_change: "Es war kein Eingriff nötig; der Dienst wurde erfolgreich geprüft."
+};
+
+function log(event, fields = {}) {
+  console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields }));
+}
+
+function stopForSecurity(reason, source) {
+  tripCircuitBreaker(stateDirectory, reason, source);
+  log("circuit_breaker_tripped", { reason, source });
+}
+
+async function github(pathname, options = {}) {
+  const response = await fetch(`https://api.github.com/repos/${repository}${pathname}`, {
+    ...options,
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${githubToken}`,
+      "x-github-api-version": "2022-11-28",
+      "user-agent": "fasrv-incident-agent/1.0",
+      ...(options.headers ?? {})
+    },
+    signal: AbortSignal.timeout(15000)
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`github_${response.status}`);
+  return text ? JSON.parse(text) : null;
+}
+
+async function githubWrite(pathname, method, payload) {
+  const serialized = JSON.stringify(payload);
+  const secret = scanner.scan(serialized);
+  if (secret) {
+    stopForSecurity(secret, "github_output_gate");
+    throw new Error("security_gate");
+  }
+  const injection = detectPromptInjection(serialized);
+  if (injection) {
+    stopForSecurity(injection, "github_output_gate");
+    throw new Error("security_gate");
+  }
+  if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
+  return github(pathname, { method, body: serialized, headers: { "content-type": "application/json" } });
+}
+
+function runGrok(kind, prompt, schema) {
+  return new Promise((resolve, reject) => {
+    const systemPrompt = fs.readFileSync(path.join(promptDirectory, `${kind}.txt`), "utf8");
+    const args = [
+      "-p", prompt,
+      "--system-prompt-override", systemPrompt,
+      "--output-format", "json",
+      "--json-schema", JSON.stringify(schema),
+      "--no-memory",
+      "--no-subagents",
+      "--disable-web-search",
+      "--max-turns", "1",
+      "--tools", ""
+    ];
+    const child = spawn(grokBinary, args, {
+      cwd: "/srv/fasrv-incident-agent",
+      env: { HOME: "/home/codexweb", PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), 180000);
+    child.stdout.on("data", (chunk) => { if (stdout.length < 1048576) stdout += chunk; });
+    child.stderr.on("data", (chunk) => { if (stderr.length < 1048576) stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const completeOutput = `${stdout}\n${stderr}`;
+      const secret = scanner.scan(completeOutput);
+      if (secret) {
+        stopForSecurity(secret, `${kind}_secret_gate`);
+        return reject(new Error("security_gate"));
+      }
+      if (code !== 0) return reject(new Error(`${kind}_failed_${code}`));
+      try {
+        const wrapper = JSON.parse(stdout);
+        if (!wrapper.structuredOutput) throw new Error("missing_structured_output");
+        const injection = detectPromptInjection(JSON.stringify(wrapper.structuredOutput));
+        if (injection) {
+          stopForSecurity(injection, `${kind}_injection_gate`);
+          return reject(new Error("security_gate"));
+        }
+        resolve({ result: wrapper.structuredOutput, completeOutput });
+      } catch {
+        reject(new Error(`${kind}_invalid_json`));
+      }
+    });
+  });
+}
+
+async function summarizeReport(report) {
+  const description = validateDescription(report.description);
+  const series = validateSeries(report.series);
+  const injection = detectPromptInjection(`${description}\n${series}`);
+  if (injection) {
+    stopForSecurity(injection, "queued_report");
+    throw new Error("security_gate");
+  }
+  const payload = JSON.stringify({ application: report.app, description, series: series || null });
+  const output = await runGrok("summarizer", `Classify this JSON data object:\n${payload}`, SUMMARY_SCHEMA);
+  if (output.result.suspicious) {
+    stopForSecurity("model_marked_suspicious", "summarizer");
+    throw new Error("security_gate");
+  }
+  return output;
+}
+
+async function probe(app) {
+  const started = Date.now();
+  try {
+    const response = await fetch(app.url, { redirect: "manual", signal: AbortSignal.timeout(10000) });
+    return { healthy: app.expectedStatusCodes.includes(response.status), status: response.status, latencyMs: Date.now() - started };
+  } catch {
+    return { healthy: false, status: 0, latencyMs: Date.now() - started };
+  }
+}
+
+function localFacts(app, publicProbe) {
+  const facts = {
+    publicHealthy: publicProbe.healthy,
+    publicStatusClass: publicProbe.status ? `${Math.floor(publicProbe.status / 100)}xx` : "network_error",
+    publicLatencyClass: publicProbe.latencyMs < 1000 ? "fast" : publicProbe.latencyMs < 3000 ? "moderate" : "slow",
+    originConfigured: Boolean(app.container || app.unit),
+    originRunning: null,
+    proxyConfigurationValid: spawnSync("sudo", ["-n", "nginx", "-t"], { stdio: "ignore" }).status === 0
+  };
+  if (app.container) facts.originRunning = spawnSync("sudo", ["-n", "docker", "inspect", "-f", "{{.State.Running}}", app.container], { encoding: "utf8" }).stdout.trim() === "true";
+  if (app.unit) facts.originRunning = spawnSync("sudo", ["-n", "systemctl", "is-active", "--quiet", app.unit]).status === 0;
+  return facts;
+}
+
+function executeAction(app, action) {
+  if (!app.allowedActions.includes(action)) throw new Error("action_not_allowed");
+  if (action === "no_action") return;
+  let result;
+  if (action === "restart_origin" && app.container) result = spawnSync("sudo", ["-n", "docker", "restart", app.container], { stdio: "ignore", timeout: 120000 });
+  else if (action === "restart_origin" && app.unit) result = spawnSync("sudo", ["-n", "systemctl", "restart", app.unit], { stdio: "ignore", timeout: 120000 });
+  else if (action === "reload_proxy") {
+    if (spawnSync("sudo", ["-n", "nginx", "-t"], { stdio: "ignore" }).status !== 0) throw new Error("nginx_config_invalid");
+    result = spawnSync("sudo", ["-n", "systemctl", "reload", "nginx"], { stdio: "ignore", timeout: 30000 });
+  } else if (action === "restart_tunnel" && app.tunnelUnit) result = spawnSync("sudo", ["-n", "systemctl", "restart", app.tunnelUnit], { stdio: "ignore", timeout: 120000 });
+  else throw new Error("action_unavailable");
+  if (result.status !== 0) throw new Error("action_failed");
+}
+
+async function verifyRecovery(app, category) {
+  if (["playback", "content", "other"].includes(category)) return false;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt) await delay(5000);
+    const result = await probe(app);
+    if (!result.healthy || (category === "performance" && result.latencyMs >= 3000)) return false;
+  }
+  return true;
+}
+
+async function analyzeAndFix({ app, category, issueNumber, incidentId, source }) {
+  const initialProbe = await probe(app);
+  const facts = localFacts(app, initialProbe);
+  const allowedActions = app.allowedActions;
+  const prompt = JSON.stringify({ application: app.slug, category, source, facts, allowedActions });
+  const output = await runGrok("fixer", `Choose a remediation for this trusted controller object:\n${prompt}`, FIX_SCHEMA);
+  if (!allowedActions.includes(output.result.action)) throw new Error("model_action_not_allowed");
+  atomicWriteJson(path.join(modelDirectory, `${incidentId}-fixer.json`), { result: output.result, recordedAt: new Date().toISOString() });
+  executeAction(app, output.result.action);
+  if (output.result.action !== "no_action") await delay(10000);
+  if (!(await verifyRecovery(app, category))) {
+    log("recovery_not_verified", { app: app.slug, issueNumber });
+    return false;
+  }
+  const comment = `${PROBLEM_TEXT[output.result.problemCode]}\n${FIX_TEXT[output.result.fixCode]}\n\nSolved by: Grok 4.5`;
+  await githubWrite(`/issues/${issueNumber}/comments`, "POST", { body: comment });
+  if (source === "public_form") await githubWrite(`/issues/${issueNumber}`, "PATCH", { state: "closed", state_reason: "completed" });
+  log("incident_solved", { app: app.slug, issueNumber, action: output.result.action });
+  return true;
+}
+
+function safeReportIssue(app, summary, id) {
+  if (!/^[0-9a-f-]{36}$/u.test(id)) throw new Error("invalid_report_id");
+  return {
+    title: `Störungsmeldung: ${app.displayName}`,
+    body: [
+      "Eine Störung wurde über status.fasrv.ch gemeldet.",
+      "",
+      `- Anwendung: ${app.displayName}`,
+      `- Kategorie: ${CATEGORY_LABELS[summary.category]}`,
+      `- Referenz: ${id}`,
+      "",
+      "Die technische Prüfung läuft automatisch.",
+      `<!-- fasrv-report:v1:${id} -->`
+    ].join("\n"),
+    labels: ["user-report", app.slug]
+  };
+}
+
+async function processQueueFile(file) {
+  if (isPaused(stateDirectory)) return;
+  const claimed = path.join(processingDirectory, path.basename(file));
+  try { fs.renameSync(file, claimed); } catch { return; }
+  const report = readJson(claimed);
+  try {
+    if (!report || !appBySlug.has(report.app)) throw new Error("invalid_queued_report");
+    const summaryOutput = await summarizeReport(report);
+    atomicWriteJson(path.join(modelDirectory, `${report.id}-summarizer.json`), { result: summaryOutput.result, recordedAt: new Date().toISOString() });
+    const app = appBySlug.get(report.app);
+    const issue = await githubWrite("/issues", "POST", safeReportIssue(app, summaryOutput.result, report.id));
+    const solved = await analyzeAndFix({ app, category: summaryOutput.result.category, issueNumber: issue.number, incidentId: report.id, source: "public_form" });
+    atomicWriteJson(path.join(archiveDirectory, `${report.id}.json`), { ...report, summary: summaryOutput.result, issueNumber: issue.number, solved, processedAt: new Date().toISOString() });
+    fs.unlinkSync(claimed);
+  } catch (error) {
+    log("report_processing_failed", { reportId: report?.id ?? "invalid", code: error.message });
+    if (!isPaused(stateDirectory)) fs.renameSync(claimed, path.join(queueDirectory, path.basename(claimed)));
+  }
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function isAuthenticUpptimeIssue(issue, app) {
+  const labels = new Set(issue.labels.map((label) => typeof label === "string" ? label : label.name));
+  if (!labels.has("status") || !labels.has(app.slug)) return false;
+  if (issue.user?.login !== "Nikoheld" || issue.title !== `🛑 ${app.displayName} is down`) return false;
+  const bodyPattern = new RegExp(
+    "^In \\[`[0-9a-f]{7}`\\]\\(https://github\\.com/Nikoheld/fasrv-status/commit/[0-9a-f]{40}\\n?\\), "
+      + `${escapeRegex(app.displayName)} \\(${escapeRegex(app.url)}\\) was \\*\\*down\\*\\*:\\n`
+      + "- HTTP code: \\d{1,3}\\n- Response time: \\d+ ms\\n?$",
+    "u"
+  );
+  return bodyPattern.test(issue.body ?? "");
+}
+
+async function pollIssues() {
+  const issues = await github("/issues?state=all&sort=created&direction=desc&per_page=30");
+  if (freshControllerState && controllerState.seenIssues.length === 0) {
+    controllerState.seenIssues = issues.filter((issue) => !issue.pull_request).map((issue) => issue.number).slice(-500);
+    atomicWriteJson(controllerStateFile, controllerState);
+    log("github_baseline_recorded", { issues: controllerState.seenIssues.length });
+    return;
+  }
+  const seen = new Set(controllerState.seenIssues);
+  for (const issue of issues.reverse()) {
+    if (issue.pull_request || seen.has(issue.number)) continue;
+    const app = apps.find((candidate) => isAuthenticUpptimeIssue(issue, candidate));
+    if (app) {
+      await analyzeAndFix({ app, category: "availability", issueNumber: issue.number, incidentId: `upptime-${issue.number}`, source: "upptime" });
+    } else if (new Date(issue.created_at) >= new Date(controllerState.startedAt)) {
+      const injection = detectPromptInjection(`${issue.title ?? ""}\n${issue.body ?? ""}`);
+      if (injection) {
+        stopForSecurity(injection, "github_issue");
+        return;
+      }
+    }
+    seen.add(issue.number);
+    controllerState.seenIssues = [...seen].slice(-500);
+    atomicWriteJson(controllerStateFile, controllerState);
+  }
+}
+
+async function cycle() {
+  if (isPaused(stateDirectory)) return;
+  for (const file of fs.readdirSync(queueDirectory).filter((name) => name.endsWith(".json")).sort()) {
+    await processQueueFile(path.join(queueDirectory, file));
+    if (isPaused(stateDirectory)) return;
+  }
+  await pollIssues();
+}
+
+log("worker_started", { repository, apps: apps.length });
+while (true) {
+  try { await cycle(); } catch (error) { log("cycle_failed", { code: error.message }); }
+  await delay(pollSeconds * 1000);
+}
