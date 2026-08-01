@@ -1,6 +1,7 @@
 (() => {
   "use strict";
 
+  function boot() {
   const API = "https://share.fasrv.ch/status-report-api";
   const applications = [
     ["fasrv-dashboard", "FASRV Dashboard"],
@@ -119,4 +120,8 @@
       submit.disabled = false;
     }
   });
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, { once: true });
+  else boot();
 })();
