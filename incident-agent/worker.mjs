@@ -33,23 +33,25 @@ let eventSequence = 0;
 const SUMMARY_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["category", "severity", "suspicious", "internalSummary"],
+  required: ["category", "severity", "suspicious", "internalSummary", "classificationBasis"],
   properties: {
     category: { type: "string", enum: ["availability", "login", "playback", "performance", "content", "other"] },
     severity: { type: "string", enum: ["low", "medium", "high"] },
     suspicious: { type: "boolean" },
-    internalSummary: { type: "string", minLength: 1, maxLength: 160 }
+    internalSummary: { type: "string", minLength: 1, maxLength: 160 },
+    classificationBasis: { type: "string", minLength: 1, maxLength: 220 }
   }
 };
 
 const FIX_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["action", "problemCode", "fixCode"],
+  required: ["action", "problemCode", "fixCode", "decisionSummary"],
   properties: {
     action: { type: "string", enum: ["no_action", "restart_origin", "reload_proxy", "restart_tunnel"] },
     problemCode: { type: "string", enum: ["unavailable", "slow", "proxy", "origin", "unknown"] },
-    fixCode: { type: "string", enum: ["recovered", "restarted", "proxy_reloaded", "tunnel_restarted", "no_change"] }
+    fixCode: { type: "string", enum: ["recovered", "restarted", "proxy_reloaded", "tunnel_restarted", "no_change"] },
+    decisionSummary: { type: "string", minLength: 1, maxLength: 220 }
   }
 };
 
@@ -215,6 +217,10 @@ async function summarizeReport(report) {
     throw new Error("security_gate");
   }
   const payload = JSON.stringify({ application: report.app, description, series: series || null });
+  recordAgentEvent("intake", report.id, "validated", {
+    app: report.app,
+    checks: ["format", "secret_scan", "prompt_injection"]
+  });
   recordAgentEvent("intake", report.id, "started", { app: report.app });
   try {
     const output = await runGrok("summarizer", `Classify this JSON data object:\n${payload}`, SUMMARY_SCHEMA);
@@ -226,7 +232,8 @@ async function summarizeReport(report) {
       app: report.app,
       category: output.result.category,
       severity: output.result.severity,
-      summary: output.result.internalSummary
+      summary: output.result.internalSummary,
+      reasoningSummary: output.result.classificationBasis
     });
     return output;
   } catch (error) {
@@ -273,15 +280,24 @@ function executeAction(app, action) {
   if (result.status !== 0) throw new Error("action_failed");
 }
 
+function actionTarget(app, action) {
+  if (action === "restart_origin") return app.container ? "container" : "systemd_service";
+  if (action === "reload_proxy") return "nginx_proxy";
+  if (action === "restart_tunnel") return "cloudflare_tunnel";
+  return "none";
+}
+
 async function verifyRecovery(app, category) {
-  if (["playback", "content", "other"].includes(category)) return false;
+  const checks = [];
+  if (["playback", "content", "other"].includes(category)) return { verified: false, checks };
   for (let attempt = 0; attempt < 3; attempt += 1) {
     if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
     if (attempt) await delay(5000);
     const result = await probe(app);
-    if (!result.healthy || (category === "performance" && result.latencyMs >= 3000)) return false;
+    checks.push({ attempt: attempt + 1, healthy: result.healthy, status: result.status, latencyMs: result.latencyMs });
+    if (!result.healthy || (category === "performance" && result.latencyMs >= 3000)) return { verified: false, checks };
   }
-  return true;
+  return { verified: true, checks };
 }
 
 async function analyzeAndFix({ app, category, issueNumber, incidentId, source }) {
@@ -295,14 +311,25 @@ async function analyzeAndFix({ app, category, issueNumber, incidentId, source })
     if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
     if (!allowedActions.includes(output.result.action)) throw new Error("model_action_not_allowed");
     atomicWriteJson(path.join(modelDirectory, `${incidentId}-fixer.json`), { result: output.result, recordedAt: new Date().toISOString() });
-    recordAgentEvent("fixer", incidentId, "decision", { app: app.slug, issueNumber, ...output.result });
+    recordAgentEvent("fixer", incidentId, "decision", {
+      app: app.slug,
+      issueNumber,
+      ...output.result,
+      reasoningSummary: output.result.decisionSummary
+    });
     executeAction(app, output.result.action);
-    recordAgentEvent("fixer", incidentId, "action", { app: app.slug, issueNumber, action: output.result.action });
+    recordAgentEvent("fixer", incidentId, "action", {
+      app: app.slug,
+      issueNumber,
+      action: output.result.action,
+      target: actionTarget(app, output.result.action)
+    });
     if (output.result.action !== "no_action") await delay(10000);
-    const verified = await verifyRecovery(app, category);
-    recordAgentEvent("fixer", incidentId, "verification", { app: app.slug, issueNumber, verified });
-    if (!verified) {
+    const verification = await verifyRecovery(app, category);
+    recordAgentEvent("fixer", incidentId, "verification", { app: app.slug, issueNumber, ...verification });
+    if (!verification.verified) {
       log("recovery_not_verified", { app: app.slug, issueNumber });
+      recordAgentEvent("fixer", incidentId, "failed", { app: app.slug, issueNumber, code: "recovery_not_verified" });
       return false;
     }
     if (isPaused(stateDirectory)) throw new Error("pipeline_paused");

@@ -246,6 +246,18 @@ main {
   overflow-wrap: anywhere;
 }
 
+.timeline__detail strong {
+  color: #c7d0d9;
+  font-weight: 650;
+}
+
+.timeline__detail--reasoning {
+  background: rgb(255 255 255 / 3%);
+  border-left: 2px solid currentColor;
+  margin-top: 0.45rem;
+  padding: 0.4rem 0.5rem;
+}
+
 .timeline__empty {
   border: 1px dashed var(--border);
   border-radius: 6px;

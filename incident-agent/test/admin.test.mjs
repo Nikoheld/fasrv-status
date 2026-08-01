@@ -32,6 +32,14 @@ test("admin API blocks, rejects cross-origin control, and unblocks", async (cont
   const port = await freePort();
   const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "fasrv-admin-test-"));
   for (const name of ["events", "processing", "queue"]) fs.mkdirSync(path.join(stateDirectory, name));
+  fs.writeFileSync(path.join(stateDirectory, "events", "1754064000000-000001.json"), JSON.stringify({
+    time: "2026-08-01T16:00:00.000Z",
+    agent: "fixer",
+    incidentId: "test",
+    stage: "decision",
+    app: "test-app",
+    reasoningSummary: "Der Dienst ist erreichbar, daher ist kein Eingriff erforderlich."
+  }));
   const child = spawn(process.execPath, [path.resolve("admin-server.mjs")], {
     cwd: path.resolve("."),
     env: { ...process.env, PORT: String(port), STATE_DIRECTORY: stateDirectory, STATIC_DIRECTORY: path.resolve("admin") },
@@ -46,6 +54,7 @@ test("admin API blocks, rejects cross-origin control, and unblocks", async (cont
   const snapshot = await waitForServer(`${origin}/api/snapshot`);
   assert.equal(snapshot.paused, false);
   assert.ok(snapshot.controlToken.length > 20);
+  assert.equal(snapshot.events[0].reasoningSummary, "Der Dienst ist erreichbar, daher ist kein Eingriff erforderlich.");
 
   const unauthorized = await fetch(`${origin}/api/control`, {
     method: "POST",

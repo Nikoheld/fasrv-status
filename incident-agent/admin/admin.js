@@ -17,6 +17,7 @@
   let changing = false;
 
   const labels = {
+    validated: "Sicherheitsprüfung bestanden",
     started: "Analyse gestartet",
     completed: "Abgeschlossen",
     decision: "Entscheidung getroffen",
@@ -32,23 +33,84 @@
     restart_tunnel: "Verbindung neu starten"
   };
 
+  const problemLabels = {
+    unavailable: "Öffentlich nicht erreichbar",
+    slow: "Antwort zu langsam",
+    proxy: "Proxy gestört",
+    origin: "Anwendungsdienst gestört",
+    unknown: "Ursache nicht eindeutig"
+  };
+
+  const fixLabels = {
+    recovered: "Ohne Eingriff erholt",
+    restarted: "Dienst neu gestartet",
+    proxy_reloaded: "Proxy neu geladen",
+    tunnel_restarted: "Verbindung neu aufgebaut",
+    no_change: "Keine Änderung"
+  };
+
+  const targetLabels = {
+    none: "Kein System verändert",
+    container: "Anwendungs-Container",
+    systemd_service: "Anwendungsdienst",
+    nginx_proxy: "Nginx-Proxy",
+    cloudflare_tunnel: "Cloudflare-Tunnel"
+  };
+
+  const securityCheckLabels = {
+    format: "Format",
+    secret_scan: "Zugangsdaten",
+    prompt_injection: "Prompt Injection"
+  };
+
+  const categoryLabels = {
+    availability: "Erreichbarkeit",
+    login: "Anmeldung",
+    playback: "Wiedergabe",
+    performance: "Geschwindigkeit",
+    content: "Inhalt",
+    other: "Allgemeine Störung"
+  };
+
+  const severityLabels = {
+    low: "Niedrig",
+    medium: "Mittel",
+    high: "Hoch"
+  };
+
   function formatTime(value) {
     return new Intl.DateTimeFormat("de-CH", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
   }
 
   function detailLines(event) {
     const lines = [];
-    if (event.summary) lines.push(event.summary);
-    if (event.category) lines.push(`Kategorie: ${event.category}`);
-    if (event.severity) lines.push(`Priorität: ${event.severity}`);
-    if (event.action) lines.push(`Aktion: ${actionLabels[event.action] ?? event.action}`);
+    if (event.summary) lines.push({ label: "Ergebnis", value: event.summary });
+    if (event.reasoningSummary) lines.push({ label: "Begründung", value: event.reasoningSummary, emphasis: true });
+    if (event.category) lines.push({ label: "Kategorie", value: categoryLabels[event.category] ?? event.category });
+    if (event.severity) lines.push({ label: "Priorität", value: severityLabels[event.severity] ?? event.severity });
+    if (event.problemCode) lines.push({ label: "Diagnose", value: problemLabels[event.problemCode] ?? event.problemCode });
+    if (event.fixCode) lines.push({ label: "Erwartetes Ergebnis", value: fixLabels[event.fixCode] ?? event.fixCode });
+    if (event.action) lines.push({ label: "Aktion", value: actionLabels[event.action] ?? event.action });
+    if (event.target) lines.push({ label: "Ziel", value: targetLabels[event.target] ?? event.target });
+    if (event.issueNumber) lines.push({ label: "Issue", value: `#${event.issueNumber}` });
     if (event.facts) {
-      lines.push(`Öffentlich: ${event.facts.publicHealthy ? "erreichbar" : "gestört"}`);
-      if (event.facts.originRunning !== null) lines.push(`Dienst: ${event.facts.originRunning ? "aktiv" : "inaktiv"}`);
-      lines.push(`Proxy: ${event.facts.proxyConfigurationValid ? "gültig" : "fehlerhaft"}`);
+      lines.push({ label: "Öffentlich", value: `${event.facts.publicHealthy ? "erreichbar" : "gestört"}, ${event.facts.publicStatusClass}, ${event.facts.publicLatencyClass}` });
+      if (event.facts.originRunning !== null) lines.push({ label: "Dienst", value: event.facts.originRunning ? "aktiv" : "inaktiv" });
+      lines.push({ label: "Proxy-Konfiguration", value: event.facts.proxyConfigurationValid ? "gültig" : "fehlerhaft" });
     }
-    if (typeof event.verified === "boolean") lines.push(event.verified ? "3 Prüfungen bestanden" : "Nicht ausreichend verifiziert");
-    if (event.code) lines.push(`Status: ${event.code}`);
+    if (Array.isArray(event.checks) && event.checks.every((check) => typeof check === "string")) {
+      lines.push({ label: "Geprüft", value: event.checks.map((check) => securityCheckLabels[check] ?? check).join(", ") });
+    }
+    if (Array.isArray(event.checks) && event.checks.every((check) => typeof check === "object")) {
+      for (const check of event.checks) {
+        lines.push({
+          label: `Health-Check ${check.attempt}`,
+          value: `${check.healthy ? "bestanden" : "fehlgeschlagen"}, HTTP ${check.status || "Netzwerkfehler"}, ${check.latencyMs} ms`
+        });
+      }
+    }
+    if (typeof event.verified === "boolean") lines.push({ label: "Verifikation", value: event.verified ? "Bestanden" : "Nicht ausreichend" });
+    if (event.code) lines.push({ label: "Status", value: event.code });
     return lines;
   }
 
@@ -64,7 +126,7 @@
       state.dataset.active = "false";
       return;
     }
-    const active = filtered[0].stage === "started";
+    const active = !["completed", "failed"].includes(filtered[0].stage);
     state.textContent = active ? "Arbeitet" : "Bereit";
     state.dataset.active = String(active);
     for (const event of filtered) {
@@ -84,8 +146,12 @@
       item.append(top, app);
       for (const line of detailLines(event)) {
         const detail = document.createElement("p");
-        detail.className = "timeline__detail";
-        detail.textContent = line;
+        detail.className = line.emphasis ? "timeline__detail timeline__detail--reasoning" : "timeline__detail";
+        const detailLabel = document.createElement("strong");
+        detailLabel.textContent = `${line.label}: `;
+        const detailValue = document.createElement("span");
+        detailValue.textContent = line.value;
+        detail.append(detailLabel, detailValue);
         item.append(detail);
       }
       list.append(item);
