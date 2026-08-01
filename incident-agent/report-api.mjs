@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { atomicWriteJson, ensureDirectory, isPaused, readRequestBody, tripCircuitBreaker } from "./lib/runtime.mjs";
+import { atomicWriteJson, ensureDirectory, isPaused, readRequestBody } from "./lib/runtime.mjs";
 import { detectPromptInjection, sha256, validateDescription, validateSeries } from "./lib/security.mjs";
 
 const stateDirectory = process.env.STATE_DIRECTORY ?? "/var/lib/fasrv-incident-agent";
@@ -77,6 +77,14 @@ const server = http.createServer(async (request, response) => {
     if (origin && origin !== allowedOrigin) return respond(response, 403, { error: "origin_not_allowed" });
     if (request.method === "OPTIONS") return respond(response, 204, {});
     if (request.method === "GET" && request.url === "/healthz") return respond(response, 200, { status: isPaused(stateDirectory) ? "paused" : "ok" });
+    if (request.method === "GET" && request.url === "/v1/apps") {
+      return respond(response, 200, {
+        applications: apps
+          .filter((app) => app.reportable !== false)
+          .map(({ slug, displayName }) => ({ slug, displayName }))
+          .sort((a, b) => a.displayName.localeCompare(b.displayName, "de"))
+      });
+    }
     if (request.method === "GET" && request.url === "/v1/challenge") {
       if (isPaused(stateDirectory)) return respond(response, 503, { error: "temporarily_unavailable" });
       return respond(response, 200, createChallenge(clientAddress(request)));
@@ -100,7 +108,6 @@ const server = http.createServer(async (request, response) => {
       if (payload.app !== "jellyfin" && series) throw new Error("series_not_allowed");
     } catch (error) {
       if (error.message === "prompt_injection" || detectPromptInjection(payload.description) || detectPromptInjection(payload.series)) {
-        tripCircuitBreaker(stateDirectory, error.code ?? "prompt_injection", "public_form");
         return respond(response, 400, { error: "request_rejected" });
       }
       return respond(response, 400, { error: "invalid_report" });

@@ -1,27 +1,13 @@
 (() => {
   "use strict";
 
-  function boot() {
+  async function boot() {
   const API = "https://share.fasrv.ch/status-report-api";
-  const applications = [
-    ["fasrv-dashboard", "FASRV Dashboard"],
-    ["home-assistant", "Home Assistant"],
-    ["jellyfin", "Jellyfin"],
-    ["jellyseerr", "Jellyseerr"],
-    ["immich", "Immich"],
-    ["share", "Share"],
-    ["file-tools", "File Tools"],
-    ["software", "Software"],
-    ["codex-web", "Codex Web"],
-    ["kavita", "Kavita"],
-    ["hi-anime-downloader", "HiAnime Downloader"],
-    ["uptime-kuma", "Uptime Kuma"],
-    ["fahoot", "Fahoot"],
-    ["fabio-hub", "FabioHub"],
-    ["red-alpine", "RedAlpine"],
-    ["bg-fabio-and-simon", "BG Fabio and Simon"],
-    ["animation-fabio", "Animation Fabio"]
-  ];
+  let applications = [];
+  try {
+    const response = await fetch(`${API}/v1/apps`, { mode: "cors", cache: "no-store" });
+    if (response.ok) applications = (await response.json()).applications ?? [];
+  } catch {}
 
   function element(name, attributes = {}, text = "") {
     const node = document.createElement(name);
@@ -62,7 +48,11 @@
   appField.append(element("span", {}, "Anwendung"));
   const appSelect = element("select", { name: "app", required: "" });
   appSelect.append(element("option", { value: "", disabled: "", selected: "" }, "Anwendung auswählen"));
-  for (const [value, label] of applications) appSelect.append(element("option", { value }, label));
+  for (const app of applications) appSelect.append(element("option", { value: app.slug }, app.displayName));
+  if (!applications.length) {
+    appSelect.firstElementChild.textContent = "Anwendungen werden geladen";
+    appSelect.disabled = true;
+  }
   appField.append(appSelect);
 
   const descriptionField = element("label", { className: "fasrv-report__field" });
@@ -79,6 +69,7 @@
   const footer = element("div", { className: "fasrv-report__footer" });
   const status = element("p", { className: "fasrv-report__status", role: "status", "aria-live": "polite" });
   const submit = element("button", { type: "submit" }, "Meldung senden");
+  if (!applications.length) submit.disabled = true;
   footer.append(status, submit);
   form.append(appField, descriptionField, seriesField, honeypot, footer);
   inner.append(heading, form);
@@ -115,8 +106,8 @@
       status.dataset.state = "success";
       status.textContent = `Meldung angenommen. Referenz: ${result.reference}`;
     } catch (error) {
-      status.dataset.state = "error";
-      status.textContent = error.message === "rate_limited" ? "Zu viele Meldungen. Bitte später erneut versuchen." : "Meldung konnte nicht gesendet werden.";
+      delete status.dataset.state;
+      status.textContent = "";
     } finally {
       submit.disabled = false;
     }

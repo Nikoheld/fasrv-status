@@ -3,13 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 
 const INJECTION_RULES = [
-  ["role_override", /(?:^|\s)(?:system|developer|assistant|user)\s*:/iu],
+  ["role_override", /(?:^|\n)\s*(?:system|developer)\s*:/iu],
   ["instruction_override", /(?:ignore|disregard|forget|override|bypass|ignoriere|vergiss|ueberschreibe|überschreibe).{0,50}(?:instruction|prompt|rule|message|anweisung|regel|vorgabe)/iu],
   ["prompt_attack", /(?:prompt\s*injection|jailbreak|system\s*prompt|developer\s*message|hidden\s*instruction|dan\s*mode)/iu],
   ["secret_request", /(?:show|print|reveal|leak|exfiltrate|read|zeige|drucke|verrate|lies).{0,50}(?:password|passwort|secret|token|credential|api[ _-]?key|\.env|auth\.json)/iu],
-  ["tool_request", /(?:run|execute|invoke|call|fuehre|führe|starte).{0,40}(?:shell|bash|command|tool|curl|wget|sudo|cat\s)/iu],
-  ["code_markup", /```|`[^`]{2,}`|<\/?(?:script|system|assistant|tool|prompt)\b|\$\{|\{\{|\}\}/iu],
-  ["sensitive_path", /(?:\/etc\/|\/root\/|\/proc\/|\/sys\/|\.\.\/|file:\/\/)/iu],
+  ["prompt_markup", /<\/?(?:system|developer|assistant|tool|prompt)\b/iu],
   ["encoded_payload", /(?:[A-Za-z0-9+/]{80,}={0,2}|[A-Fa-f0-9]{96,})/u],
   ["bidi_control", /[\u202A-\u202E\u2066-\u2069]/u],
   ["control_character", /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u]
@@ -43,7 +41,6 @@ export function validateDescription(value) {
   if (text.length < 8) throw new Error("description_too_short");
   const injection = detectPromptInjection(text);
   if (injection) throw Object.assign(new Error("prompt_injection"), { code: injection });
-  if (!/^[\p{L}\p{N}\p{M}\s.,!?():;'"%+\-&]+$/u.test(text)) throw new Error("unsupported_characters");
   return text;
 }
 
@@ -52,7 +49,6 @@ export function validateSeries(value) {
   const text = normalizeText(value, 120).replace(/\s+/gu, " ");
   const injection = detectPromptInjection(text);
   if (injection) throw Object.assign(new Error("prompt_injection"), { code: injection });
-  if (!/^[\p{L}\p{N}\p{M}\s.:'\-&]+$/u.test(text)) throw new Error("unsupported_series_characters");
   return text;
 }
 

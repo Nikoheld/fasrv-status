@@ -59,6 +59,7 @@
     none: "Kein System verändert",
     container: "Anwendungs-Container",
     systemd_service: "Anwendungsdienst",
+    origin_components: "Anwendungs-Komponenten",
     nginx_proxy: "Nginx-Proxy",
     cloudflare_tunnel: "Cloudflare-Tunnel",
     jellyfin_library: "Jellyfin-Bibliothek",
@@ -68,7 +69,9 @@
   const securityCheckLabels = {
     format: "Format",
     secret_scan: "Zugangsdaten",
-    prompt_injection: "Prompt Injection"
+    prompt_injection: "Prompt Injection",
+    trusted_author: "Vertrauenswürdiger GitHub-Autor",
+    local_origin_state: "Lokaler Komponentenstatus"
   };
 
   const categoryLabels = {

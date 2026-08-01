@@ -10,7 +10,8 @@ const jellyfin = {
 };
 
 test("limits automated bug repair to Jellyfin categories", () => {
-  assert.deepEqual(allowedActionsFor({ slug: "home-assistant", allowedActions: ["restart_origin"] }, "availability", true), ["no_action"]);
+  assert.deepEqual(allowedActionsFor({ slug: "home-assistant", allowedActions: ["restart_origin"] }, "availability", true), ["no_action", "restart_origin"]);
+  assert.deepEqual(allowedActionsFor({ slug: "home-assistant", allowedActions: ["restart_origin"] }, "images", true), ["no_action"]);
   assert.deepEqual(allowedActionsFor(jellyfin, "playback", false), ["no_action", "restart_origin"]);
   assert.deepEqual(allowedActionsFor(jellyfin, "images", true), ["no_action", "refresh_jellyfin_images"]);
   assert.deepEqual(allowedActionsFor(jellyfin, "images", false), ["no_action"]);
@@ -20,7 +21,7 @@ test("limits automated bug repair to Jellyfin categories", () => {
 });
 
 test("uses fixed non-public explanations for every outcome", () => {
-  assert.equal(noActionReasonFor({ slug: "home-assistant" }, "availability", false), "unsupported_application");
+  assert.equal(noActionReasonFor({ slug: "home-assistant" }, "availability", false), "insufficient_evidence");
   assert.equal(noActionReasonFor(jellyfin, "images", false), "missing_series");
   assert.equal(noActionReasonFor(jellyfin, "anime_download", false), "missing_series");
   assert.match(outcomeComment({ action: "no_action", incidentId: "test-1", noActionReason: "missing_series" }), /Checked by: Grok 4\.5/u);

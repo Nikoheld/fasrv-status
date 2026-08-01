@@ -16,6 +16,7 @@ const eventDirectory = path.join(stateDirectory, "events");
 const appConfig = process.env.APP_CONFIG ?? "/etc/fasrv-incident-agent/apps.json";
 const promptDirectory = process.env.PROMPT_DIRECTORY ?? path.join(import.meta.dirname, "prompts");
 const repository = process.env.GITHUB_REPOSITORY ?? "Nikoheld/fasrv-status";
+const trustedGithubUser = process.env.TRUSTED_GITHUB_USER ?? "Nikoheld";
 const githubToken = fs.readFileSync(process.env.GITHUB_TOKEN_FILE ?? "/etc/fasrv-incident-agent/github-token", "utf8").trim();
 const grokBinary = process.env.GROK_BINARY ?? "/home/codexweb/.grok/bin/grok";
 const grokReasoningEffort = process.env.GROK_REASONING_EFFORT ?? "low";
@@ -27,6 +28,7 @@ const scanner = SecretScanner.fromPaths((process.env.SECRET_PATHS ?? "/srv/codex
 const controllerStateFile = path.join(stateDirectory, "controller.json");
 const freshControllerState = !fs.existsSync(controllerStateFile);
 let controllerState = readJson(controllerStateFile, { startedAt: new Date().toISOString(), seenIssues: [] });
+controllerState.localHealth ??= {};
 
 if (!new Set(["low", "medium", "high"]).has(grokReasoningEffort)) throw new Error("invalid_grok_reasoning_effort");
 
@@ -126,11 +128,6 @@ async function githubWrite(pathname, method, payload) {
     stopForSecurity(secret, "github_output_gate");
     throw new Error("security_gate");
   }
-  const injection = detectPromptInjection(serialized);
-  if (injection) {
-    stopForSecurity(injection, "github_output_gate");
-    throw new Error("security_gate");
-  }
   if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
   return github(pathname, { method, body: serialized, headers: { "content-type": "application/json" } });
 }
@@ -185,8 +182,7 @@ function runGrok(kind, prompt, schema) {
         if (!wrapper.structuredOutput) throw new Error("missing_structured_output");
         const injection = detectPromptInjection(JSON.stringify(wrapper.structuredOutput));
         if (injection) {
-          stopForSecurity(injection, `${kind}_injection_gate`);
-          return reject(new Error("security_gate"));
+          return reject(new Error("prompt_injection"));
         }
         resolve({ result: wrapper.structuredOutput, completeOutput });
       } catch {
@@ -202,13 +198,11 @@ async function summarizeReport(report) {
   const untrustedInput = `${description}\n${series}`;
   const secret = scanner.scan(untrustedInput);
   if (secret) {
-    stopForSecurity(secret, "queued_report_secret_gate");
-    throw new Error("security_gate");
+    throw new Error("report_contains_secret");
   }
   const injection = detectPromptInjection(untrustedInput);
   if (injection) {
-    stopForSecurity(injection, "queued_report");
-    throw new Error("security_gate");
+    throw new Error("prompt_injection");
   }
   const payload = JSON.stringify({ application: report.app, description, series: series || null });
   recordAgentEvent("intake", report.id, "validated", {
@@ -219,8 +213,7 @@ async function summarizeReport(report) {
   try {
     const output = await runGrok("summarizer", `Classify this JSON data object:\n${payload}`, SUMMARY_SCHEMA);
     if (output.result.suspicious) {
-      stopForSecurity("model_marked_suspicious", "summarizer");
-      throw new Error("security_gate");
+      throw new Error("prompt_injection");
     }
     recordAgentEvent("intake", report.id, "completed", {
       app: report.app,
@@ -238,6 +231,7 @@ async function summarizeReport(report) {
 
 async function probe(app) {
   const started = Date.now();
+  if (!app.url) return { healthy: true, status: null, latencyMs: 0, skipped: true };
   try {
     const response = await fetch(app.url, { redirect: "manual", signal: AbortSignal.timeout(10000) });
     return { healthy: app.expectedStatusCodes.includes(response.status), status: response.status, latencyMs: Date.now() - started };
@@ -246,28 +240,83 @@ async function probe(app) {
   }
 }
 
+function configuredOrigins(app) {
+  const origins = [];
+  if (app.container) origins.push({ kind: "container", name: app.container, primary: true });
+  if (app.unit) origins.push({ kind: "unit", name: app.unit, primary: true });
+  for (const name of app.watchContainers ?? []) origins.push({ kind: "container", name, primary: false });
+  for (const name of app.watchUnits ?? []) origins.push({ kind: "unit", name, primary: false });
+  return origins.filter((origin, index, all) => all.findIndex((candidate) => candidate.kind === origin.kind && candidate.name === origin.name) === index);
+}
+
+function originKey(origin) {
+  return `${origin.kind}:${origin.name}`;
+}
+
+function readOriginStateMap(origins) {
+  const unique = origins.filter((origin, index, all) => all.findIndex((candidate) => originKey(candidate) === originKey(origin)) === index);
+  const states = new Map(unique.map((origin) => [originKey(origin), { running: false, restartCount: 0 }]));
+  const containers = unique.filter((origin) => origin.kind === "container").map((origin) => origin.name);
+  if (containers.length) {
+    const inspection = spawnSync("sudo", ["-n", "docker", "inspect", "-f", "{{.Name}}|{{.State.Running}}|{{.RestartCount}}", ...containers], { encoding: "utf8", timeout: 30000 });
+    if (inspection.status === 0) {
+      for (const line of inspection.stdout.trim().split("\n")) {
+        const [rawName, running, restartCount] = line.split("|");
+        states.set(`container:${rawName.replace(/^\//u, "")}`, { running: running === "true", restartCount: Number(restartCount) || 0 });
+      }
+    }
+  }
+  const units = unique.filter((origin) => origin.kind === "unit").map((origin) => origin.name);
+  if (units.length) {
+    const inspection = spawnSync("sudo", ["-n", "systemctl", "show", "--property=Id", "--property=ActiveState", "--property=NRestarts", ...units], { encoding: "utf8", timeout: 30000 });
+    if (inspection.status === 0) {
+      for (const block of inspection.stdout.trim().split(/\n\n+/u)) {
+        const values = Object.fromEntries(block.split("\n").map((line) => line.split(/=(.*)/su).slice(0, 2)));
+        if (values.Id) states.set(`unit:${values.Id}`, { running: values.ActiveState === "active", restartCount: Number(values.NRestarts) || 0 });
+      }
+    }
+  }
+  return states;
+}
+
+function readOriginStates(app, stateMap = readOriginStateMap(configuredOrigins(app))) {
+  return configuredOrigins(app).map((origin) => ({ ...origin, ...(stateMap.get(originKey(origin)) ?? { running: false, restartCount: 0 }) }));
+}
+
 function localFacts(app, publicProbe) {
+  const origins = readOriginStates(app);
   const facts = {
     publicHealthy: publicProbe.healthy,
-    publicStatusClass: publicProbe.status ? `${Math.floor(publicProbe.status / 100)}xx` : "network_error",
-    publicLatencyClass: publicProbe.latencyMs < 1000 ? "fast" : publicProbe.latencyMs < 3000 ? "moderate" : "slow",
-    originConfigured: Boolean(app.container || app.unit),
-    originRunning: null,
+    publicStatusClass: publicProbe.skipped ? "not_configured" : publicProbe.status ? `${Math.floor(publicProbe.status / 100)}xx` : "network_error",
+    publicLatencyClass: publicProbe.skipped ? "not_checked" : publicProbe.latencyMs < 1000 ? "fast" : publicProbe.latencyMs < 3000 ? "moderate" : "slow",
+    originConfigured: origins.length > 0,
+    originRunning: origins.length ? origins.every((origin) => origin.running) : null,
+    failedOrigins: origins.filter((origin) => !origin.running).map((origin) => `${origin.kind}:${origin.name}`),
     proxyConfigurationValid: spawnSync("sudo", ["-n", "nginx", "-t"], { stdio: "ignore" }).status === 0
   };
-  if (app.container) facts.originRunning = spawnSync("sudo", ["-n", "docker", "inspect", "-f", "{{.State.Running}}", app.container], { encoding: "utf8" }).stdout.trim() === "true";
-  if (app.unit) facts.originRunning = spawnSync("sudo", ["-n", "systemctl", "is-active", "--quiet", app.unit]).status === 0;
   return facts;
 }
 
-function executeAction(app, action, series) {
+function executeAction(app, action, series, facts) {
   if (!app.allowedActions.includes(action)) throw new Error("action_not_allowed");
   if (action === "no_action") return { accepted: true, target: "none", latencyMs: 0 };
   const started = Date.now();
   let result;
-  if (action === "restart_origin" && app.container) result = spawnSync("sudo", ["-n", "docker", "restart", app.container], { stdio: "ignore", timeout: 120000 });
-  else if (action === "restart_origin" && app.unit) result = spawnSync("sudo", ["-n", "systemctl", "restart", app.unit], { stdio: "ignore", timeout: 120000 });
-  else if (action === "reload_proxy") {
+  if (action === "restart_origin") {
+    const origins = configuredOrigins(app);
+    const failed = new Set(facts?.failedOrigins ?? []);
+    const targets = origins.filter((origin) => failed.has(`${origin.kind}:${origin.name}`));
+    const selected = targets.length ? targets : origins.filter((origin) => origin.primary);
+    if (!selected.length) throw new Error("action_unavailable");
+    for (const origin of selected) {
+      result = origin.kind === "container"
+        ? spawnSync("sudo", ["-n", "docker", "restart", origin.name], { stdio: "ignore", timeout: 120000 })
+        : spawnSync("sudo", ["-n", "systemctl", "restart", origin.name], { stdio: "ignore", timeout: 120000 });
+      if (result.status !== 0) throw new Error("action_failed");
+    }
+    return { accepted: true, target: "origin_components", restarted: selected.map((origin) => `${origin.kind}:${origin.name}`), latencyMs: Date.now() - started };
+  }
+  if (action === "reload_proxy") {
     if (spawnSync("sudo", ["-n", "nginx", "-t"], { stdio: "ignore" }).status !== 0) throw new Error("nginx_config_invalid");
     result = spawnSync("sudo", ["-n", "systemctl", "reload", "nginx"], { stdio: "ignore", timeout: 30000 });
   } else if (action === "refresh_jellyfin_images" || action === "requeue_hianime") {
@@ -291,7 +340,7 @@ function readJsonFromString(value) {
 }
 
 function actionTarget(app, action) {
-  if (action === "restart_origin") return app.container ? "container" : "systemd_service";
+  if (action === "restart_origin") return "origin_components";
   if (action === "reload_proxy") return "nginx_proxy";
   if (action === "refresh_jellyfin_images") return "jellyfin_library";
   if (action === "requeue_hianime") return "hianime_queue";
@@ -319,13 +368,18 @@ async function verifyRecovery(app, category, action, actionResult) {
     if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
     if (attempt) await delay(5000);
     const result = await probe(app);
-    checks.push({ attempt: attempt + 1, healthy: result.healthy, status: result.status, latencyMs: result.latencyMs });
-    if (!result.healthy || (category === "performance" && result.latencyMs >= 3000)) return { verified: false, checks };
+    const origins = readOriginStates(app);
+    const originsHealthy = origins.every((origin) => origin.running);
+    const healthy = result.healthy && originsHealthy && !(category === "performance" && !result.skipped && result.latencyMs >= 3000);
+    checks.push({ attempt: attempt + 1, healthy, status: result.status, latencyMs: result.latencyMs, originsHealthy });
+    if (!healthy) continue;
   }
-  return { verified: true, checks };
+  return { verified: checks.length === 3 && checks.every((check) => check.healthy), checks };
 }
 
 async function githubCommentOnce(issueNumber, incidentId, body) {
+  const issue = await github(`/issues/${issueNumber}`);
+  if (issue.user?.login !== trustedGithubUser) throw new Error("untrusted_issue_author");
   const marker = outcomeMarker(incidentId);
   const comments = await github(`/issues/${issueNumber}/comments?per_page=100`);
   if (comments.some((comment) => String(comment.body ?? "").includes(marker))) return false;
@@ -339,11 +393,23 @@ function publicFailureCode(code) {
 }
 
 async function analyzeAndFix({ app, category, issueNumber, incidentId, source, series = "" }) {
+  const issue = await github(`/issues/${issueNumber}`);
+  if (issue.user?.login !== trustedGithubUser) {
+    log("issue_ignored_untrusted_author", { issueNumber, author: issue.user?.login ?? "unknown" });
+    return false;
+  }
   const initialProbe = await probe(app);
   const facts = localFacts(app, initialProbe);
   const hasSeries = Boolean(series);
   const allowedActions = allowedActionsFor(app, category, hasSeries);
-  const prompt = JSON.stringify({ application: app.slug, category, source, facts, allowedActions, scope: { jellyfinOnly: true, seriesProvided: hasSeries } });
+  const prompt = JSON.stringify({
+    application: app.slug,
+    category,
+    source,
+    facts,
+    allowedActions,
+    scope: { crashRecoveryForAllApps: true, contentBugRepair: "jellyfin_only", seriesProvided: hasSeries }
+  });
   recordAgentEvent("fixer", incidentId, "started", { app: app.slug, category, source, issueNumber, facts });
   try {
     const modelFile = path.join(modelDirectory, `${incidentId}-fixer.json`);
@@ -353,49 +419,61 @@ async function analyzeAndFix({ app, category, issueNumber, incidentId, source, s
       : await runGrok("fixer", `Choose a remediation for this trusted controller object:\n${prompt}`, FIX_SCHEMA);
     if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
     if (!allowedActions.includes(output.result.action)) throw new Error("model_action_not_allowed");
-    if (!cachedModel?.result) atomicWriteJson(modelFile, { result: output.result, recordedAt: new Date().toISOString() });
-    const noActionReason = output.result.action === "no_action" ? noActionReasonFor(app, category, hasSeries) : null;
+    const decision = facts.failedOrigins.length > 0 && allowedActions.includes("restart_origin")
+      ? { ...output.result, action: "restart_origin", fixCode: "restarted", decisionSummary: "Eine konfigurierte Anwendungskomponente ist ausgefallen und wird kontrolliert neu gestartet." }
+      : output.result;
+    if (!cachedModel?.result) atomicWriteJson(modelFile, { result: decision, recordedAt: new Date().toISOString() });
+    const noActionReason = decision.action === "no_action" ? noActionReasonFor(app, category, hasSeries) : null;
     recordAgentEvent("fixer", incidentId, "decision", {
       app: app.slug,
       issueNumber,
-      ...output.result,
+      ...decision,
       noActionReason,
       reasoningSummary: output.result.decisionSummary
     });
-    if (output.result.action === "no_action") {
+    if (decision.action === "no_action") {
+      if (source === "local_watch" && facts.publicHealthy && facts.originRunning) {
+        const body = `${app.displayName} ist nach dem erkannten Neustart wieder erreichbar und wurde geprüft.\n\nSolved by: Grok 4.5\n${outcomeMarker(incidentId)}`;
+        await githubCommentOnce(issueNumber, incidentId, body);
+        await githubWrite(`/issues/${issueNumber}`, "PATCH", { state: "closed", state_reason: "completed" });
+        recordAgentEvent("fixer", incidentId, "completed", { app: app.slug, issueNumber, action: "no_action", outcome: "already_recovered" });
+        return true;
+      }
       recordAgentEvent("fixer", incidentId, "action", { app: app.slug, issueNumber, action: "no_action", target: "none", noActionReason });
-      await githubCommentOnce(issueNumber, incidentId, outcomeComment({ action: "no_action", incidentId, noActionReason }));
+      await githubCommentOnce(issueNumber, incidentId, outcomeComment({ action: "no_action", incidentId, appName: app.displayName, noActionReason }));
       recordAgentEvent("fixer", incidentId, "completed", { app: app.slug, issueNumber, action: "no_action", outcome: "not_executed" });
       return false;
     }
     const receiptFile = path.join(modelDirectory, `${incidentId}-action.json`);
     const receipt = readJson(receiptFile);
-    const actionResult = receipt?.action === output.result.action
+    const actionResult = receipt?.action === decision.action
       ? receipt.result
-      : executeAction(app, output.result.action, series);
-    if (receipt?.action !== output.result.action) {
-      atomicWriteJson(receiptFile, { action: output.result.action, result: actionResult, recordedAt: new Date().toISOString() });
+      : executeAction(app, decision.action, series, facts);
+    if (receipt?.action !== decision.action) {
+      atomicWriteJson(receiptFile, { action: decision.action, result: actionResult, recordedAt: new Date().toISOString() });
     }
     recordAgentEvent("fixer", incidentId, "action", {
       app: app.slug,
       issueNumber,
-      action: output.result.action,
-      target: actionTarget(app, output.result.action)
+      action: decision.action,
+      target: actionTarget(app, decision.action)
     });
-    if (output.result.action !== "no_action") await delay(10000);
-    const verification = await verifyRecovery(app, category, output.result.action, actionResult);
+    if (decision.action !== "no_action") await delay(10000);
+    const verification = await verifyRecovery(app, category, decision.action, actionResult);
     recordAgentEvent("fixer", incidentId, "verification", { app: app.slug, issueNumber, ...verification });
     if (!verification.verified) {
       log("recovery_not_verified", { app: app.slug, issueNumber });
-      await githubCommentOnce(issueNumber, incidentId, outcomeComment({ action: output.result.action, incidentId, failureCode: "recovery_not_verified" }));
+      await githubCommentOnce(issueNumber, incidentId, outcomeComment({ action: decision.action, incidentId, appName: app.displayName, failureCode: "recovery_not_verified" }));
       recordAgentEvent("fixer", incidentId, "failed", { app: app.slug, issueNumber, code: "recovery_not_verified" });
       return false;
     }
     if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
-    await githubCommentOnce(issueNumber, incidentId, outcomeComment({ action: output.result.action, incidentId }));
-    if (source === "public_form") await githubWrite(`/issues/${issueNumber}`, "PATCH", { state: "closed", state_reason: "completed" });
-    recordAgentEvent("fixer", incidentId, "completed", { app: app.slug, issueNumber, action: output.result.action });
-    log("incident_solved", { app: app.slug, issueNumber, action: output.result.action });
+    await githubCommentOnce(issueNumber, incidentId, outcomeComment({ action: decision.action, incidentId, appName: app.displayName }));
+    if (source === "public_form" || source === "local_watch") {
+      await githubWrite(`/issues/${issueNumber}`, "PATCH", { state: "closed", state_reason: "completed" });
+    }
+    recordAgentEvent("fixer", incidentId, "completed", { app: app.slug, issueNumber, action: decision.action });
+    log("incident_solved", { app: app.slug, issueNumber, action: decision.action });
     return true;
   } catch (error) {
     recordAgentEvent("fixer", incidentId, "failed", { app: app.slug, issueNumber, code: error.message });
@@ -403,6 +481,7 @@ async function analyzeAndFix({ app, category, issueNumber, incidentId, source, s
     await githubCommentOnce(issueNumber, incidentId, outcomeComment({
       action: "no_action",
       incidentId,
+      appName: app.displayName,
       failureCode: publicFailureCode(error.message)
     }));
     return false;
@@ -423,14 +502,14 @@ function safeReportIssue(app, summary, id) {
       "Die technische Prüfung läuft automatisch.",
       `<!-- fasrv-report:v1:${id} -->`
     ].join("\n"),
-    labels: ["user-report", app.slug]
+    labels: ["user-report"]
   };
 }
 
 async function findExistingReportIssue(app, id) {
-  const issues = await github(`/issues?state=all&labels=user-report,${encodeURIComponent(app.slug)}&per_page=100`);
+  const issues = await github("/issues?state=all&labels=user-report&per_page=100");
   const marker = `<!-- fasrv-report:v1:${id} -->`;
-  return issues.find((issue) => !issue.pull_request && issue.body?.includes(marker)) ?? null;
+  return issues.find((issue) => !issue.pull_request && issue.user?.login === trustedGithubUser && issue.body?.includes(marker)) ?? null;
 }
 
 async function processQueueFile(file) {
@@ -448,6 +527,8 @@ async function processQueueFile(file) {
       atomicWriteJson(path.join(modelDirectory, `${report.id}-summarizer.json`), { result: summaryOutput.result, recordedAt: new Date().toISOString() });
       const existingIssue = await findExistingReportIssue(app, report.id);
       const issue = existingIssue ?? await githubWrite("/issues", "POST", safeReportIssue(app, summaryOutput.result, report.id));
+      if (issue.user?.login !== trustedGithubUser) throw new Error("untrusted_issue_author");
+      markIssueSeen(issue.number);
       workflowState = { summary: summaryOutput.result, issueNumber: issue.number, stage: "issue_created" };
       atomicWriteJson(workflowStateFile, workflowState);
     }
@@ -457,29 +538,140 @@ async function processQueueFile(file) {
     fs.rmSync(workflowStateFile, { force: true });
   } catch (error) {
     log("report_processing_failed", { reportId: report?.id ?? "invalid", code: error.message });
-    if (!isPaused(stateDirectory)) fs.renameSync(claimed, path.join(queueDirectory, path.basename(claimed)));
+    if (new Set(["prompt_injection", "report_contains_secret"]).has(error.message)) {
+      fs.renameSync(claimed, path.join(quarantineDirectory, path.basename(claimed)));
+      fs.rmSync(workflowStateFile, { force: true });
+    } else if (!isPaused(stateDirectory)) {
+      fs.renameSync(claimed, path.join(queueDirectory, path.basename(claimed)));
+    }
   }
 }
 
-function escapeRegex(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+function issueLabels(issue) {
+  return new Set((issue.labels ?? []).map((label) => typeof label === "string" ? label : label.name));
+}
+
+function markIssueSeen(issueNumber) {
+  const seen = new Set(controllerState.seenIssues ?? []);
+  seen.add(issueNumber);
+  controllerState.seenIssues = [...seen].slice(-500);
+  atomicWriteJson(controllerStateFile, controllerState);
 }
 
 function isAuthenticUpptimeIssue(issue, app) {
-  const labels = new Set(issue.labels.map((label) => typeof label === "string" ? label : label.name));
+  const labels = issueLabels(issue);
   if (!labels.has("status") || !labels.has(app.slug)) return false;
-  if (issue.user?.login !== "Nikoheld" || issue.title !== `🛑 ${app.displayName} is down`) return false;
-  const bodyPattern = new RegExp(
-    "^In \\[`[0-9a-f]{7}`\\]\\(https://github\\.com/Nikoheld/fasrv-status/commit/[0-9a-f]{40}\\n?\\), "
-      + `${escapeRegex(app.displayName)} \\(${escapeRegex(app.url)}\\) was \\*\\*down\\*\\*:\\n`
-      + "- HTTP code: \\d{1,3}\\n- Response time: \\d+ ms\\n?$",
-    "u"
-  );
-  return bodyPattern.test(issue.body ?? "");
+  if (issue.user?.login !== trustedGithubUser) return false;
+  return issue.title === `🛑 ${app.displayName} is down`
+    || issue.title === `🟨 ${app.displayName} has degraded performance`;
+}
+
+function appForTrustedIssue(issue) {
+  const labels = issueLabels(issue);
+  const byLabel = apps.find((app) => labels.has(app.slug));
+  if (byLabel) return byLabel;
+  const haystack = `${issue.title ?? ""}\n${issue.body ?? ""}`.normalize("NFKC").toLocaleLowerCase("de");
+  return apps.find((app) => {
+    const names = [app.slug.replaceAll("-", " "), app.displayName, ...(app.aliases ?? [])]
+      .map((value) => String(value).normalize("NFKC").toLocaleLowerCase("de"));
+    return names.some((name) => haystack.includes(name));
+  }) ?? null;
+}
+
+function categoryForIssue(issue) {
+  const text = `${issue.title ?? ""}\n${issue.body ?? ""}`.toLocaleLowerCase("de");
+  if (/poster|bild|image|cover|verschwommen|unscharf/u.test(text)) return "images";
+  if (/anime.{0,30}(download|queue|warteschlange)|requeue/u.test(text)) return "anime_download";
+  if (/playback|wiedergabe|abspielen|stream/u.test(text)) return "playback";
+  if (/langsam|slow|lag|performance|timeout/u.test(text)) return "performance";
+  if (/login|anmeld/u.test(text)) return "login";
+  return "availability";
+}
+
+function seriesForIssue(issue) {
+  const match = String(issue.body ?? "").match(/(?:Serie|Series)\s*:\s*([^\n]{1,120})/iu);
+  try { return match ? validateSeries(match[1]) : ""; } catch { return ""; }
+}
+
+function localCrashIssue(app) {
+  return {
+    title: `🛑 ${app.displayName} crashed`,
+    body: [
+      `${app.displayName} wurde vom lokalen FASRV-Wächter als nicht laufend erkannt.`,
+      "",
+      "Die Wiederherstellung und anschließende Funktionsprüfung laufen automatisch.",
+      `<!-- fasrv-local-crash:v1:${app.slug} -->`
+    ].join("\n")
+  };
+}
+
+async function findOpenLocalCrashIssue(app) {
+  const issues = await github("/issues?state=open&per_page=100");
+  const marker = `<!-- fasrv-local-crash:v1:${app.slug} -->`;
+  return issues.find((issue) => !issue.pull_request && issue.user?.login === trustedGithubUser && issue.body?.includes(marker)) ?? null;
+}
+
+async function monitorLocalCrashes() {
+  const now = Date.now();
+  const stateMap = readOriginStateMap(apps.filter((app) => app.monitorLocal !== false).flatMap(configuredOrigins));
+  for (const app of apps) {
+    if (app.monitorLocal === false || configuredOrigins(app).length === 0) continue;
+    const health = controllerState.localHealth[app.slug] ?? { failures: 0, issueNumber: null, lastAttemptAt: 0, restartCounts: null };
+    const origins = readOriginStates(app, stateMap);
+    const restartCounts = Object.fromEntries(origins.map((origin) => [`${origin.kind}:${origin.name}`, origin.restartCount]));
+    if (!health.restartCounts) {
+      health.restartCounts = restartCounts;
+      controllerState.localHealth[app.slug] = health;
+      continue;
+    }
+    const restarted = origins.filter((origin) => origin.restartCount > (health.restartCounts[`${origin.kind}:${origin.name}`] ?? origin.restartCount));
+    health.restartCounts = restartCounts;
+    const allRunning = origins.every((origin) => origin.running);
+    if (allRunning && restarted.length === 0) {
+      health.failures = 0;
+      if (health.issueNumber) {
+        const issue = await github(`/issues/${health.issueNumber}`);
+        const result = await probe(app);
+        if (issue.state === "open" && issue.user?.login === trustedGithubUser && result.healthy) {
+          const incidentId = `local-recovered-${app.slug}-${issue.number}`;
+          const body = `${app.displayName} ist wieder erreichbar und wurde erneut geprüft.\n\nSolved by: Grok 4.5\n${outcomeMarker(incidentId)}`;
+          await githubCommentOnce(issue.number, incidentId, body);
+          await githubWrite(`/issues/${issue.number}`, "PATCH", { state: "closed", state_reason: "completed" });
+          health.issueNumber = null;
+        }
+      }
+      controllerState.localHealth[app.slug] = health;
+      continue;
+    }
+    health.failures = allRunning ? 2 : health.failures + 1;
+    controllerState.localHealth[app.slug] = health;
+    atomicWriteJson(controllerStateFile, controllerState);
+    if (health.failures < 2 || now - health.lastAttemptAt < 300000) continue;
+    health.lastAttemptAt = now;
+    let issue = health.issueNumber ? await github(`/issues/${health.issueNumber}`) : null;
+    if (!issue || issue.state !== "open" || issue.user?.login !== trustedGithubUser) issue = await findOpenLocalCrashIssue(app);
+    if (!issue) issue = await githubWrite("/issues", "POST", localCrashIssue(app));
+    if (issue.user?.login !== trustedGithubUser) throw new Error("untrusted_issue_author");
+    health.issueNumber = issue.number;
+    markIssueSeen(issue.number);
+    recordAgentEvent("fixer", `local-${app.slug}`, "validated", { app: app.slug, checks: ["trusted_author", "local_origin_state"] });
+    const solved = await analyzeAndFix({
+      app,
+      category: "availability",
+      issueNumber: issue.number,
+      incidentId: `local-${app.slug}-${now}`,
+      source: "local_watch"
+    });
+    if (solved) {
+      health.failures = 0;
+      health.issueNumber = null;
+    }
+    atomicWriteJson(controllerStateFile, controllerState);
+  }
 }
 
 async function pollIssues() {
-  const issues = await github("/issues?state=all&sort=created&direction=desc&per_page=30");
+  const issues = await github("/issues?state=all&sort=created&direction=desc&per_page=100");
   if (freshControllerState && controllerState.seenIssues.length === 0) {
     controllerState.seenIssues = issues.filter((issue) => !issue.pull_request).map((issue) => issue.number).slice(-500);
     atomicWriteJson(controllerStateFile, controllerState);
@@ -489,25 +681,35 @@ async function pollIssues() {
   const seen = new Set(controllerState.seenIssues);
   for (const issue of issues.reverse()) {
     if (issue.pull_request || seen.has(issue.number)) continue;
-    const app = apps.find((candidate) => isAuthenticUpptimeIssue(issue, candidate));
-    if (app) {
-      await analyzeAndFix({ app, category: "availability", issueNumber: issue.number, incidentId: `upptime-${issue.number}`, source: "upptime" });
-    } else if (new Date(issue.created_at) >= new Date(controllerState.startedAt)) {
-      const untrustedIssue = `${issue.title ?? ""}\n${issue.body ?? ""}`;
-      const secret = scanner.scan(untrustedIssue);
-      if (secret) {
-        stopForSecurity(secret, "github_issue_secret_gate");
-        return;
-      }
-      const injection = detectPromptInjection(untrustedIssue);
-      if (injection) {
-        stopForSecurity(injection, "github_issue");
-        return;
+    if (issue.user?.login !== trustedGithubUser) {
+      log("issue_ignored_untrusted_author", { issueNumber: issue.number, author: issue.user?.login ?? "unknown" });
+      markIssueSeen(issue.number);
+      continue;
+    }
+    if (issue.state === "open" && new Date(issue.created_at) >= new Date(controllerState.startedAt)) {
+      const trustedIssueText = `${issue.title ?? ""}\n${issue.body ?? ""}`;
+      const secret = scanner.scan(trustedIssueText);
+      const injection = detectPromptInjection(trustedIssueText);
+      if (secret || injection) {
+        log("issue_isolated", { issueNumber: issue.number, code: secret ?? injection });
+      } else {
+        const upptimeApp = apps.find((candidate) => isAuthenticUpptimeIssue(issue, candidate));
+        const app = upptimeApp ?? appForTrustedIssue(issue);
+        if (app) {
+          await analyzeAndFix({
+            app,
+            category: upptimeApp ? (issue.title.includes("degraded performance") ? "performance" : "availability") : categoryForIssue(issue),
+            issueNumber: issue.number,
+            incidentId: `${upptimeApp ? "upptime" : "github"}-${issue.number}`,
+            source: upptimeApp ? "upptime" : "github",
+            series: app.slug === "jellyfin" ? seriesForIssue(issue) : ""
+          });
+        } else {
+          log("issue_ignored_unknown_application", { issueNumber: issue.number });
+        }
       }
     }
-    seen.add(issue.number);
-    controllerState.seenIssues = [...seen].slice(-500);
-    atomicWriteJson(controllerStateFile, controllerState);
+    markIssueSeen(issue.number);
   }
 }
 
@@ -517,10 +719,11 @@ async function cycle() {
     await processQueueFile(path.join(queueDirectory, file));
     if (isPaused(stateDirectory)) return;
   }
+  await monitorLocalCrashes();
   await pollIssues();
 }
 
-log("worker_started", { repository, apps: apps.length });
+log("worker_started", { repository, trustedGithubUser, apps: apps.length });
 while (true) {
   try { await cycle(); } catch (error) { log("cycle_failed", { code: error.message }); }
   await delay(pollSeconds * 1000);
