@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { atomicWriteJson, ensureDirectory, isPaused, readJson, tripCircuitBreaker } from "./lib/runtime.mjs";
 import { detectPromptInjection, SecretScanner, validateDescription, validateSeries } from "./lib/security.mjs";
 import { allowedActionsFor, isSecurityInterruption, noActionReasonFor, outcomeComment, outcomeMarker } from "./lib/remediation.mjs";
+import { originRestarted } from "./lib/origin-state.mjs";
 
 const stateDirectory = process.env.STATE_DIRECTORY ?? "/var/lib/fasrv-incident-agent";
 const queueDirectory = path.join(stateDirectory, "queue");
@@ -255,24 +256,24 @@ function originKey(origin) {
 
 function readOriginStateMap(origins) {
   const unique = origins.filter((origin, index, all) => all.findIndex((candidate) => originKey(candidate) === originKey(origin)) === index);
-  const states = new Map(unique.map((origin) => [originKey(origin), { running: false, restartCount: 0 }]));
+  const states = new Map(unique.map((origin) => [originKey(origin), { running: false, restartCount: 0, generation: "" }]));
   const containers = unique.filter((origin) => origin.kind === "container").map((origin) => origin.name);
   if (containers.length) {
-    const inspection = spawnSync("sudo", ["-n", "docker", "inspect", "-f", "{{.Name}}|{{.State.Running}}|{{.RestartCount}}", ...containers], { encoding: "utf8", timeout: 30000 });
+    const inspection = spawnSync("sudo", ["-n", "docker", "inspect", "-f", "{{.Name}}|{{.State.Running}}|{{.RestartCount}}|{{.State.StartedAt}}", ...containers], { encoding: "utf8", timeout: 30000 });
     if (inspection.status === 0) {
       for (const line of inspection.stdout.trim().split("\n")) {
-        const [rawName, running, restartCount] = line.split("|");
-        states.set(`container:${rawName.replace(/^\//u, "")}`, { running: running === "true", restartCount: Number(restartCount) || 0 });
+        const [rawName, running, restartCount, generation] = line.split("|");
+        states.set(`container:${rawName.replace(/^\//u, "")}`, { running: running === "true", restartCount: Number(restartCount) || 0, generation });
       }
     }
   }
   const units = unique.filter((origin) => origin.kind === "unit").map((origin) => origin.name);
   if (units.length) {
-    const inspection = spawnSync("sudo", ["-n", "systemctl", "show", "--property=Id", "--property=ActiveState", "--property=NRestarts", ...units], { encoding: "utf8", timeout: 30000 });
+    const inspection = spawnSync("sudo", ["-n", "systemctl", "show", "--property=Id", "--property=ActiveState", "--property=NRestarts", "--property=ActiveEnterTimestampMonotonic", ...units], { encoding: "utf8", timeout: 30000 });
     if (inspection.status === 0) {
       for (const block of inspection.stdout.trim().split(/\n\n+/u)) {
         const values = Object.fromEntries(block.split("\n").map((line) => line.split(/=(.*)/su).slice(0, 2)));
-        if (values.Id) states.set(`unit:${values.Id}`, { running: values.ActiveState === "active", restartCount: Number(values.NRestarts) || 0 });
+        if (values.Id) states.set(`unit:${values.Id}`, { running: values.ActiveState === "active", restartCount: Number(values.NRestarts) || 0, generation: values.ActiveEnterTimestampMonotonic ?? "" });
       }
     }
   }
@@ -280,7 +281,7 @@ function readOriginStateMap(origins) {
 }
 
 function readOriginStates(app, stateMap = readOriginStateMap(configuredOrigins(app))) {
-  return configuredOrigins(app).map((origin) => ({ ...origin, ...(stateMap.get(originKey(origin)) ?? { running: false, restartCount: 0 }) }));
+  return configuredOrigins(app).map((origin) => ({ ...origin, ...(stateMap.get(originKey(origin)) ?? { running: false, restartCount: 0, generation: "" }) }));
 }
 
 function localFacts(app, publicProbe) {
@@ -616,16 +617,16 @@ async function monitorLocalCrashes() {
   const stateMap = readOriginStateMap(apps.filter((app) => app.monitorLocal !== false).flatMap(configuredOrigins));
   for (const app of apps) {
     if (app.monitorLocal === false || configuredOrigins(app).length === 0) continue;
-    const health = controllerState.localHealth[app.slug] ?? { failures: 0, issueNumber: null, lastAttemptAt: 0, restartCounts: null };
+    const health = controllerState.localHealth[app.slug] ?? { failures: 0, issueNumber: null, lastAttemptAt: 0, componentStates: null };
     const origins = readOriginStates(app, stateMap);
-    const restartCounts = Object.fromEntries(origins.map((origin) => [`${origin.kind}:${origin.name}`, origin.restartCount]));
-    if (!health.restartCounts) {
-      health.restartCounts = restartCounts;
+    const componentStates = Object.fromEntries(origins.map((origin) => [originKey(origin), { restartCount: origin.restartCount, generation: origin.generation }]));
+    if (!health.componentStates) {
+      health.componentStates = componentStates;
       controllerState.localHealth[app.slug] = health;
       continue;
     }
-    const restarted = origins.filter((origin) => origin.restartCount > (health.restartCounts[`${origin.kind}:${origin.name}`] ?? origin.restartCount));
-    health.restartCounts = restartCounts;
+    const restarted = origins.filter((origin) => originRestarted(origin, health.componentStates[originKey(origin)]));
+    health.componentStates = componentStates;
     const allRunning = origins.every((origin) => origin.running);
     if (allRunning && restarted.length === 0) {
       health.failures = 0;
