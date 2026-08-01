@@ -1,31 +1,63 @@
-# Change these first
-owner: upptime # Your GitHub organization or username, where this repository lives
-repo: upptime # The name of this repository
+owner: Nikoheld
+repo: fasrv-status
+user-agent: Nikoheld
 
 sites:
-  - name: Google
-    url: https://www.google.com
-  - name: Wikipedia
-    url: https://en.wikipedia.org
-  - name: Hacker News
-    url: https://news.ycombinator.com
-  - name: Secret Site
-    url: $SECRET_SITE
+  - name: FASRV Dashboard
+    url: https://fasrv.ch
+  - name: Home Assistant
+    url: https://home.fasrv.ch
+  - name: Jellyfin
+    url: https://jellyfin.fasrv.ch/health
+  - name: Jellyseerr
+    url: https://jellyseerr.fasrv.ch/api/v1/status
+  - name: Immich
+    url: https://galerie.fasrv.ch/api/server/ping
+  - name: Share
+    url: https://share.fasrv.ch
+  - name: File Tools
+    url: https://tools.fasrv.ch
+  - name: Software
+    url: https://software.fasrv.ch
+  - name: Codex Web
+    url: https://codex.fasrv.ch
+    expectedStatusCodes:
+      - 401
+  - name: Kavita
+    url: https://kavita.fasrv.ch
+  - name: HiAnime Downloader
+    url: https://hianime-downloader.fasrv.ch
+  - name: Uptime Kuma
+    url: https://kuma.fasrv.ch
+  - name: Fahoot
+    url: https://fahoot.fasrv.ch
+  - name: FabioHub
+    url: https://fabiohub.fasrv.ch
+  - name: RedAlpine
+    url: https://redalpine.fasrv.ch
+  - name: BG Fabio and Simon
+    url: https://bg.fasrv.ch
+  - name: Animation Fabio
+    url: https://fabiobg.fasrv.ch
+
+assignees:
+  - Nikoheld
+
+skipDeleteIssues: true
 
 status-website:
-  # Add your custom domain name, or remove the `cname` line if you don't have a domain
-  # Uncomment the `baseUrl` line if you don't have a custom domain and add your repo name there
-  cname: demo.upptime.js.org
-  # baseUrl: /your-repo-name
-  logoUrl: https://raw.githubusercontent.com/upptime/upptime.js.org/master/static/img/icon.svg
-  name: Upptime
-  introTitle: "**Upptime** is the open-source uptime monitor and status page, powered entirely by GitHub."
-  introMessage: This is a sample status page which uses **real-time** data from our [GitHub repository](https://github.com/upptime/upptime). No server required — just GitHub Actions, Issues, and Pages. [**Get your own for free**](https://github.com/upptime/upptime)
+  cname: status.fasrv.ch
+  theme: dark
+  name: FASRV Status
+  introTitle: "**FASRV** service status"
+  introMessage: Live availability, response times, and incident history for FASRV services.
   navbar:
     - title: Status
       href: /
+    - title: FASRV
+      href: https://fasrv.ch
     - title: GitHub
       href: https://github.com/$OWNER/$REPO
 
-# Upptime also supports notifications, assigning issues, and more
-# See https://upptime.js.org/docs/configuration
+workflowSchedule:
+  uptime: "*/5 * * * *"
