@@ -59,7 +59,7 @@ status-website:
   name: FASRV Status
   introTitle: "**FASRV** service status"
   introMessage: Live availability, response times, and incident history for FASRV services.
-  customFootHtml: '<div id="fasrv-report-root"></div>'
+  customBodyHtml: '<div id="fasrv-report-root"></div>'
   scripts:
     - src: https://status.fasrv.ch/report-form.js
       defer: true

@@ -84,6 +84,7 @@
   inner.append(heading, form);
   section.append(inner);
   root.append(section);
+  document.querySelector("#sapper > footer")?.before(root);
 
   appSelect.addEventListener("change", () => {
     const jellyfin = appSelect.value === "jellyfin";
