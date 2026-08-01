@@ -134,6 +134,15 @@
     }
     if (Array.isArray(event.checks) && event.checks.every((check) => typeof check === "object")) {
       for (const check of event.checks) {
+        if (check.kind === "image") {
+          lines.push({
+            label: "Bildprüfung",
+            value: check.healthy
+              ? `bestanden, Poster ${check.primary.width}×${check.primary.height}, Hintergrund ${check.backdrop.width}×${check.backdrop.height}, Darstellung scharf`
+              : "fehlgeschlagen"
+          });
+          continue;
+        }
         lines.push({
           label: `Health-Check ${check.attempt}`,
           value: `${check.healthy ? "bestanden" : "fehlgeschlagen"}, HTTP ${check.status || "Netzwerkfehler"}, ${check.latencyMs} ms`

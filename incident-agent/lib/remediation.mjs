@@ -9,14 +9,14 @@ const JELLYFIN_ACTIONS = {
 const NO_ACTION_TEXT = {
   unsupported_application: "Keine automatische Reparatur ausgeführt: Automatische Bug-Reparaturen sind auf Jellyfin begrenzt.",
   unsupported_category: "Keine automatische Reparatur ausgeführt: Die Meldung gehört keiner freigegebenen Jellyfin-Fehlerklasse an.",
-  missing_series: "Keine automatische Reparatur ausgeführt: Für das erneute Einreihen eines Anime-Downloads fehlt der Serienname.",
+  missing_series: "Keine automatische Reparatur ausgeführt: Für die gezielte Jellyfin-Reparatur fehlt der Serienname.",
   insufficient_evidence: "Keine automatische Reparatur ausgeführt: Die technische Prüfung rechtfertigt keinen sicheren Eingriff."
 };
 
 const SUCCESS_TEXT = {
   restart_origin: "Jellyfin wurde neu gestartet und anschließend erfolgreich geprüft.",
   reload_proxy: "Der Jellyfin-Proxy wurde neu geladen und anschließend erfolgreich geprüft.",
-  refresh_jellyfin_images: "Die Jellyfin-Metadaten und Bilder wurden zur Aktualisierung eingereiht und der Dienst anschließend geprüft.",
+  refresh_jellyfin_images: "Jellyfin hat die Bilder neu geladen; Aktualisierungsabschluss, Auflösung, Bildschärfe und die tatsächliche Darstellung wurden anschließend geprüft.",
   requeue_hianime: "Der passende fehlgeschlagene HiAnime-Download wurde erneut eingereiht."
 };
 
@@ -24,6 +24,8 @@ const FAILURE_TEXT = {
   action_failed: "Die freigegebene Reparatur konnte technisch nicht ausgeführt werden.",
   hianime_match_not_found: "Es wurde kein eindeutig passender fehlgeschlagener HiAnime-Download gefunden.",
   jellyfin_item_not_found: "Die angegebene Serie wurde in Jellyfin nicht eindeutig gefunden.",
+  jellyfin_refresh_timeout: "Jellyfin hat die Bildaktualisierung nicht innerhalb des Prüffensters abgeschlossen.",
+  jellyfin_image_not_verified: "Das erneuerte Jellyfin-Bild bestand die Auflösungs-, Schärfe- oder Darstellungsprüfung nicht.",
   recovery_not_verified: "Die Reparatur wurde ausgeführt, aber die anschließende Prüfung war nicht erfolgreich.",
   helper_failed: "Der lokale Jellyfin-Reparaturdienst hat die Aktion abgelehnt."
 };
@@ -33,19 +35,19 @@ export function allowedActionsFor(app, category, hasSeries) {
   const configured = new Set(app.allowedActions ?? []);
   const candidates = JELLYFIN_ACTIONS[category] ?? ["no_action"];
   const scoped = candidates.filter((action) => action === "no_action" || configured.has(action));
-  if (category === "anime_download" && !hasSeries) return ["no_action"];
+  if ((category === "images" || category === "anime_download") && !hasSeries) return ["no_action"];
   return scoped.includes("no_action") ? scoped : ["no_action", ...scoped];
 }
 
 export function noActionReasonFor(app, category, hasSeries) {
   if (app.slug !== "jellyfin") return "unsupported_application";
-  if (category === "anime_download" && !hasSeries) return "missing_series";
+  if ((category === "images" || category === "anime_download") && !hasSeries) return "missing_series";
   if (!Object.hasOwn(JELLYFIN_ACTIONS, category)) return "unsupported_category";
   return "insufficient_evidence";
 }
 
 export function outcomeComment({ action, incidentId, noActionReason, failureCode }) {
-  const marker = `<!-- fasrv-agent-outcome:v1:${incidentId} -->`;
+  const marker = `<!-- fasrv-agent-outcome:v2:${incidentId} -->`;
   if (failureCode) {
     const reason = FAILURE_TEXT[failureCode] ?? FAILURE_TEXT.helper_failed;
     return `${reason}\nDer Vorgang bleibt für eine manuelle Prüfung offen.\n\nChecked by: Grok 4.5\n${marker}`;
@@ -60,7 +62,7 @@ export function outcomeComment({ action, incidentId, noActionReason, failureCode
 }
 
 export function outcomeMarker(incidentId) {
-  return `<!-- fasrv-agent-outcome:v1:${incidentId} -->`;
+  return `<!-- fasrv-agent-outcome:v2:${incidentId} -->`;
 }
 
 export function isSecurityInterruption(code) {

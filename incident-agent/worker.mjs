@@ -268,12 +268,15 @@ function executeAction(app, action, series) {
     result = spawnSync("sudo", ["-n", "systemctl", "reload", "nginx"], { stdio: "ignore", timeout: 30000 });
   } else if (action === "refresh_jellyfin_images" || action === "requeue_hianime") {
     const helperAction = action === "refresh_jellyfin_images" ? "refresh-images" : "requeue-hianime";
-    result = spawnSync("sudo", ["-n", jellyfinRemediationHelper, helperAction, series], { encoding: "utf8", timeout: 120000 });
+    result = spawnSync("sudo", ["-n", jellyfinRemediationHelper, helperAction, series], { encoding: "utf8", timeout: 240000 });
     if (result.status !== 0) {
       const code = readJsonFromString(result.stdout)?.code;
-      const allowedCodes = new Set(["hianime_match_not_found", "jellyfin_item_not_found"]);
+      const allowedCodes = new Set(["hianime_match_not_found", "jellyfin_item_not_found", "jellyfin_refresh_timeout", "jellyfin_image_not_verified"]);
       throw new Error(allowedCodes.has(code) ? code : "helper_failed");
     }
+    const helperResult = readJsonFromString(result.stdout);
+    if (!helperResult?.ok || !helperResult.accepted) throw new Error("helper_failed");
+    return { ...helperResult, latencyMs: Date.now() - started };
   } else throw new Error("action_unavailable");
   if (result.status !== 0) throw new Error("action_failed");
   return { accepted: true, target: actionTarget(app, action), latencyMs: Date.now() - started };
@@ -297,6 +300,17 @@ async function verifyRecovery(app, category, action, actionResult) {
     checks.push({ attempt: 1, healthy: Boolean(actionResult?.accepted), status: actionResult?.accepted ? 202 : 0, latencyMs: actionResult?.latencyMs ?? 0 });
     return { verified: Boolean(actionResult?.accepted), checks };
   }
+  if (action === "refresh_jellyfin_images") {
+    checks.push({
+      kind: "image",
+      healthy: Boolean(actionResult?.verified),
+      primary: actionResult?.primary,
+      backdrop: actionResult?.backdrop,
+      displayBlurDisabled: Boolean(actionResult?.displayBlurDisabled),
+      latencyMs: actionResult?.latencyMs ?? 0
+    });
+    if (!actionResult?.verified) return { verified: false, checks };
+  }
   for (let attempt = 0; attempt < 3; attempt += 1) {
     if (isPaused(stateDirectory)) throw new Error("pipeline_paused");
     if (attempt) await delay(5000);
@@ -316,7 +330,7 @@ async function githubCommentOnce(issueNumber, incidentId, body) {
 }
 
 function publicFailureCode(code) {
-  const allowed = new Set(["action_failed", "helper_failed", "hianime_match_not_found", "jellyfin_item_not_found", "recovery_not_verified"]);
+  const allowed = new Set(["action_failed", "helper_failed", "hianime_match_not_found", "jellyfin_item_not_found", "jellyfin_refresh_timeout", "jellyfin_image_not_verified", "recovery_not_verified"]);
   return allowed.has(code) ? code : "helper_failed";
 }
 
