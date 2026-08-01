@@ -5,12 +5,18 @@ user-agent: Nikoheld
 sites:
   - name: FASRV Dashboard
     url: https://fasrv.ch
+    expectedStatusCodes:
+      - 200
+      - 403
   - name: Home Assistant
     url: https://home.fasrv.ch
   - name: Jellyfin
     url: https://jellyfin.fasrv.ch/health
   - name: Jellyseerr
     url: https://jellyseerr.fasrv.ch/api/v1/status
+    expectedStatusCodes:
+      - 200
+      - 403
   - name: Immich
     url: https://galerie.fasrv.ch/api/server/ping
   - name: Share
@@ -23,6 +29,7 @@ sites:
     url: https://codex.fasrv.ch
     expectedStatusCodes:
       - 401
+      - 403
   - name: Kavita
     url: https://kavita.fasrv.ch
   - name: HiAnime Downloader
