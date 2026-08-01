@@ -78,12 +78,25 @@
     high: "Hoch"
   };
 
+  const statusLabels = {
+    security_gate: "Durch Sicherheitsbarriere gestoppt",
+    pipeline_paused: "Durch Administrator gestoppt",
+    recovery_not_verified: "Wiederherstellung nicht bestätigt"
+  };
+
   function formatTime(value) {
     return new Intl.DateTimeFormat("de-CH", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
   }
 
   function detailLines(event) {
     const lines = [];
+    if (event.code === "security_gate") {
+      lines.push({
+        label: "Schutzentscheidung",
+        value: "Die Sicherheitsbewertung erkannte auffällige Eingabemuster. Der Vorgang wurde vor jeder Veröffentlichung gestoppt.",
+        emphasis: true
+      });
+    }
     if (event.summary) lines.push({ label: "Ergebnis", value: event.summary });
     if (event.reasoningSummary) lines.push({ label: "Begründung", value: event.reasoningSummary, emphasis: true });
     if (event.category) lines.push({ label: "Kategorie", value: categoryLabels[event.category] ?? event.category });
@@ -110,7 +123,7 @@
       }
     }
     if (typeof event.verified === "boolean") lines.push({ label: "Verifikation", value: event.verified ? "Bestanden" : "Nicht ausreichend" });
-    if (event.code) lines.push({ label: "Status", value: event.code });
+    if (event.code) lines.push({ label: "Status", value: statusLabels[event.code] ?? event.code });
     return lines;
   }
 
