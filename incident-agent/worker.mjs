@@ -230,15 +230,23 @@ async function summarizeReport(report) {
   }
 }
 
-async function probe(app) {
+async function probeUrl(url, expectedStatusCodes) {
   const started = Date.now();
-  if (!app.url) return { healthy: true, status: null, latencyMs: 0, skipped: true };
+  if (!url) return { healthy: true, status: null, latencyMs: 0, skipped: true };
   try {
-    const response = await fetch(app.url, { redirect: "manual", signal: AbortSignal.timeout(10000) });
-    return { healthy: app.expectedStatusCodes.includes(response.status), status: response.status, latencyMs: Date.now() - started };
+    const response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(10000) });
+    return { healthy: expectedStatusCodes.includes(response.status), status: response.status, latencyMs: Date.now() - started };
   } catch {
     return { healthy: false, status: 0, latencyMs: Date.now() - started };
   }
+}
+
+async function probe(app) {
+  return probeUrl(app.url, app.expectedStatusCodes);
+}
+
+async function probePublic(app) {
+  return probeUrl(app.publicUrl ?? app.url, app.expectedStatusCodes);
 }
 
 function configuredOrigins(app) {
@@ -612,6 +620,22 @@ async function findOpenLocalCrashIssue(app) {
   return issues.find((issue) => !issue.pull_request && issue.user?.login === trustedGithubUser && issue.body?.includes(marker)) ?? null;
 }
 
+async function reconcileRecoveredUpptimeIssues(issues) {
+  for (const issue of issues) {
+    if (issue.pull_request || issue.state !== "open" || issue.user?.login !== trustedGithubUser) continue;
+    const app = apps.find((candidate) => isAuthenticUpptimeIssue(issue, candidate));
+    if (!app) continue;
+    const [publicResult, localResult] = await Promise.all([probePublic(app), probe(app)]);
+    if (!publicResult.healthy || !localResult.healthy) continue;
+    const incidentId = `upptime-recovered-${issue.number}`;
+    const body = `${app.displayName} ist wieder erreichbar und wurde öffentlich sowie lokal geprüft.\n\nSolved by: Grok 4.5\n${outcomeMarker(incidentId)}`;
+    await githubCommentOnce(issue.number, incidentId, body);
+    await githubWrite(`/issues/${issue.number}`, "PATCH", { state: "closed", state_reason: "completed" });
+    markIssueSeen(issue.number);
+    log("upptime_issue_reconciled", { app: app.slug, issueNumber: issue.number, publicStatus: publicResult.status, localStatus: localResult.status });
+  }
+}
+
 async function monitorLocalCrashes() {
   const now = Date.now();
   const stateMap = readOriginStateMap(apps.filter((app) => app.monitorLocal !== false).flatMap(configuredOrigins));
@@ -666,6 +690,8 @@ async function monitorLocalCrashes() {
     if (solved) {
       health.failures = 0;
       health.issueNumber = null;
+      const refreshedOrigins = readOriginStates(app);
+      health.componentStates = Object.fromEntries(refreshedOrigins.map((origin) => [originKey(origin), { restartCount: origin.restartCount, generation: origin.generation }]));
     }
     atomicWriteJson(controllerStateFile, controllerState);
   }
@@ -673,6 +699,7 @@ async function monitorLocalCrashes() {
 
 async function pollIssues() {
   const issues = await github("/issues?state=all&sort=created&direction=desc&per_page=100");
+  await reconcileRecoveredUpptimeIssues(issues);
   if (freshControllerState && controllerState.seenIssues.length === 0) {
     controllerState.seenIssues = issues.filter((issue) => !issue.pull_request).map((issue) => issue.number).slice(-500);
     atomicWriteJson(controllerStateFile, controllerState);
