@@ -1,7 +1,7 @@
 url: https://home.fasrv.ch
-status: up
-code: 200
-responseTime: 595
-lastUpdated: 2026-08-01T23:57:00.589Z
+status: down
+code: 502
+responseTime: 839
+lastUpdated: 2026-08-02T11:48:29.923Z
 startTime: 2026-08-01T14:29:57.711Z
 generator: Upptime <https://github.com/upptime/upptime>
