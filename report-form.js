@@ -37,11 +37,8 @@
   const root = document.getElementById("fasrv-report-root");
   if (!root) return;
 
-  const section = element("section", { className: "fasrv-report", "aria-labelledby": "fasrv-report-title" });
+  const section = element("section", { className: "fasrv-report", "aria-label": "Störungsformular" });
   const inner = element("div", { className: "fasrv-report__inner" });
-  const heading = element("div", { className: "fasrv-report__heading" });
-  heading.append(element("h2", { id: "fasrv-report-title" }, "Störung melden"));
-  heading.append(element("p", {}, "Probleme direkt an die technische Prüfung senden."));
 
   const form = element("form", { className: "fasrv-report__form" });
   const appField = element("label", { className: "fasrv-report__field" });
@@ -72,7 +69,7 @@
   if (!applications.length) submit.disabled = true;
   footer.append(status, submit);
   form.append(appField, descriptionField, seriesField, honeypot, footer);
-  inner.append(heading, form);
+  inner.append(form);
   section.append(inner);
   root.append(section);
   document.querySelector("#sapper > footer")?.before(root);

@@ -9,24 +9,8 @@
 }
 
 .fasrv-report__inner {
-  display: grid;
-  gap: 1.5rem 2rem;
-  grid-template-columns: minmax(12rem, 0.7fr) minmax(18rem, 1.3fr);
   margin: 0 auto;
-  max-width: 64rem;
-}
-
-.fasrv-report__heading h2 {
-  font-size: 1.35rem;
-  line-height: 1.25;
-  margin: 0 0 0.4rem;
-}
-
-.fasrv-report__heading p {
-  color: var(--body-text-color, #c9d1d9);
-  line-height: 1.5;
-  margin: 0;
-  opacity: 0.78;
+  max-width: 44rem;
 }
 
 .fasrv-report__form {
@@ -138,10 +122,6 @@
 @media (max-width: 44rem) {
   .fasrv-report {
     padding: 1.5rem 1rem 2.5rem;
-  }
-
-  .fasrv-report__inner {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   .fasrv-report__footer {
