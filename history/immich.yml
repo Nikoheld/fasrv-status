@@ -1,7 +1,7 @@
 url: https://galerie.fasrv.ch/api/server/ping
-status: down
-code: 523
-responseTime: 2279
-lastUpdated: 2026-08-22T16:34:51.757Z
+status: up
+code: 200
+responseTime: 748
+lastUpdated: 2026-08-22T16:56:22.523Z
 startTime: 2026-08-01T14:30:12.709Z
 generator: Upptime <https://github.com/upptime/upptime>
