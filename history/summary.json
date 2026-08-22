@@ -10,11 +10,11 @@
     "uptimeWeek": "100.00%",
     "uptimeMonth": "99.98%",
     "uptimeYear": "99.98%",
-    "time": 151,
-    "timeDay": 229,
-    "timeWeek": 132,
-    "timeMonth": 151,
-    "timeYear": 151,
+    "time": 149,
+    "timeDay": 104,
+    "timeWeek": 122,
+    "timeMonth": 149,
+    "timeYear": 149,
     "dailyMinutesDown": {
       "2026-08-01": 7
     }
@@ -25,16 +25,16 @@
     "icon": "https://icons.duckduckgo.com/ip3/home.fasrv.ch.ico",
     "slug": "home-assistant",
     "status": "up",
-    "uptime": "99.90%",
+    "uptime": "99.91%",
     "uptimeDay": "100.00%",
     "uptimeWeek": "100.00%",
-    "uptimeMonth": "99.90%",
-    "uptimeYear": "99.90%",
-    "time": 724,
-    "timeDay": 495,
-    "timeWeek": 683,
-    "timeMonth": 724,
-    "timeYear": 724,
+    "uptimeMonth": "99.91%",
+    "uptimeYear": "99.91%",
+    "time": 730,
+    "timeDay": 864,
+    "timeWeek": 655,
+    "timeMonth": 730,
+    "timeYear": 730,
     "dailyMinutesDown": {
       "2026-08-02": 28
     }
@@ -45,16 +45,16 @@
     "icon": "https://icons.duckduckgo.com/ip3/jellyfin.fasrv.ch.ico",
     "slug": "jellyfin",
     "status": "up",
-    "uptime": "99.90%",
+    "uptime": "99.91%",
     "uptimeDay": "100.00%",
     "uptimeWeek": "100.00%",
-    "uptimeMonth": "99.90%",
-    "uptimeYear": "99.90%",
-    "time": 719,
-    "timeDay": 726,
-    "timeWeek": 857,
-    "timeMonth": 719,
-    "timeYear": 719,
+    "uptimeMonth": "99.91%",
+    "uptimeYear": "99.91%",
+    "time": 720,
+    "timeDay": 731,
+    "timeWeek": 839,
+    "timeMonth": 720,
+    "timeYear": 720,
     "dailyMinutesDown": {
       "2026-08-02": 27
     }
@@ -70,11 +70,11 @@
     "uptimeWeek": "100.00%",
     "uptimeMonth": "99.98%",
     "uptimeYear": "99.98%",
-    "time": 130,
-    "timeDay": 261,
-    "timeWeek": 102,
-    "timeMonth": 130,
-    "timeYear": 130,
+    "time": 129,
+    "timeDay": 101,
+    "timeWeek": 104,
+    "timeMonth": 129,
+    "timeYear": 129,
     "dailyMinutesDown": {
       "2026-08-01": 7
     }
@@ -85,16 +85,16 @@
     "icon": "https://icons.duckduckgo.com/ip3/galerie.fasrv.ch.ico",
     "slug": "immich",
     "status": "up",
-    "uptime": "99.90%",
+    "uptime": "99.91%",
     "uptimeDay": "100.00%",
     "uptimeWeek": "100.00%",
-    "uptimeMonth": "99.90%",
-    "uptimeYear": "99.90%",
-    "time": 669,
-    "timeDay": 428,
-    "timeWeek": 688,
-    "timeMonth": 669,
-    "timeYear": 669,
+    "uptimeMonth": "99.91%",
+    "uptimeYear": "99.91%",
+    "time": 683,
+    "timeDay": 1024,
+    "timeWeek": 716,
+    "timeMonth": 683,
+    "timeYear": 683,
     "dailyMinutesDown": {
       "2026-08-02": 27
     }
@@ -111,8 +111,8 @@
     "uptimeMonth": "100.00%",
     "uptimeYear": "100.00%",
     "time": 523,
-    "timeDay": 368,
-    "timeWeek": 547,
+    "timeDay": 522,
+    "timeWeek": 540,
     "timeMonth": 523,
     "timeYear": 523,
     "dailyMinutesDown": {}
@@ -128,11 +128,11 @@
     "uptimeWeek": "100.00%",
     "uptimeMonth": "100.00%",
     "uptimeYear": "100.00%",
-    "time": 630,
-    "timeDay": 428,
-    "timeWeek": 640,
-    "timeMonth": 630,
-    "timeYear": 630,
+    "time": 620,
+    "timeDay": 394,
+    "timeWeek": 555,
+    "timeMonth": 620,
+    "timeYear": 620,
     "dailyMinutesDown": {}
   },
   {
@@ -146,11 +146,11 @@
     "uptimeWeek": "100.00%",
     "uptimeMonth": "99.98%",
     "uptimeYear": "99.98%",
-    "time": 566,
-    "timeDay": 522,
-    "timeWeek": 541,
-    "timeMonth": 566,
-    "timeYear": 566,
+    "time": 552,
+    "timeDay": 253,
+    "timeWeek": 482,
+    "timeMonth": 552,
+    "timeYear": 552,
     "dailyMinutesDown": {
       "2026-08-01": 6
     }
@@ -166,11 +166,11 @@
     "uptimeWeek": "100.00%",
     "uptimeMonth": "99.98%",
     "uptimeYear": "99.98%",
-    "time": 117,
-    "timeDay": 131,
-    "timeWeek": 115,
-    "timeMonth": 117,
-    "timeYear": 117,
+    "time": 122,
+    "timeDay": 242,
+    "timeWeek": 145,
+    "timeMonth": 122,
+    "timeYear": 122,
     "dailyMinutesDown": {
       "2026-08-01": 6
     }
@@ -181,16 +181,16 @@
     "icon": "https://icons.duckduckgo.com/ip3/kavita.fasrv.ch.ico",
     "slug": "kavita",
     "status": "up",
-    "uptime": "99.90%",
+    "uptime": "99.91%",
     "uptimeDay": "100.00%",
     "uptimeWeek": "100.00%",
-    "uptimeMonth": "99.90%",
-    "uptimeYear": "99.90%",
-    "time": 764,
-    "timeDay": 258,
-    "timeWeek": 790,
-    "timeMonth": 764,
-    "timeYear": 764,
+    "uptimeMonth": "99.91%",
+    "uptimeYear": "99.91%",
+    "time": 753,
+    "timeDay": 503,
+    "timeWeek": 737,
+    "timeMonth": 753,
+    "timeYear": 753,
     "dailyMinutesDown": {
       "2026-08-02": 27
     }
@@ -206,11 +206,11 @@
     "uptimeWeek": "100.00%",
     "uptimeMonth": "100.00%",
     "uptimeYear": "100.00%",
-    "time": 1085,
-    "timeDay": 254,
-    "timeWeek": 1010,
-    "timeMonth": 1085,
-    "timeYear": 1085,
+    "time": 1058,
+    "timeDay": 465,
+    "timeWeek": 908,
+    "timeMonth": 1058,
+    "timeYear": 1058,
     "dailyMinutesDown": {}
   },
   {
@@ -224,11 +224,11 @@
     "uptimeWeek": "100.00%",
     "uptimeMonth": "99.98%",
     "uptimeYear": "99.98%",
-    "time": 986,
-    "timeDay": 884,
-    "timeWeek": 948,
-    "timeMonth": 986,
-    "timeYear": 986,
+    "time": 981,
+    "timeDay": 863,
+    "timeWeek": 962,
+    "timeMonth": 981,
+    "timeYear": 981,
     "dailyMinutesDown": {
       "2026-08-01": 6
     }
@@ -244,11 +244,11 @@
     "uptimeWeek": "100.00%",
     "uptimeMonth": "100.00%",
     "uptimeYear": "100.00%",
-    "time": 554,
-    "timeDay": 481,
+    "time": 559,
+    "timeDay": 663,
     "timeWeek": 590,
-    "timeMonth": 554,
-    "timeYear": 554,
+    "timeMonth": 559,
+    "timeYear": 559,
     "dailyMinutesDown": {}
   },
   {
@@ -262,11 +262,11 @@
     "uptimeWeek": "100.00%",
     "uptimeMonth": "100.00%",
     "uptimeYear": "100.00%",
-    "time": 594,
-    "timeDay": 685,
-    "timeWeek": 677,
-    "timeMonth": 594,
-    "timeYear": 594,
+    "time": 580,
+    "timeDay": 275,
+    "timeWeek": 642,
+    "timeMonth": 580,
+    "timeYear": 580,
     "dailyMinutesDown": {}
   },
   {
@@ -280,11 +280,11 @@
     "uptimeWeek": "100.00%",
     "uptimeMonth": "99.98%",
     "uptimeYear": "99.98%",
-    "time": 570,
-    "timeDay": 399,
-    "timeWeek": 522,
-    "timeMonth": 570,
-    "timeYear": 570,
+    "time": 567,
+    "timeDay": 506,
+    "timeWeek": 496,
+    "timeMonth": 567,
+    "timeYear": 567,
     "dailyMinutesDown": {
       "2026-08-01": 5
     }
@@ -300,11 +300,11 @@
     "uptimeWeek": "100.00%",
     "uptimeMonth": "99.98%",
     "uptimeYear": "99.98%",
-    "time": 610,
-    "timeDay": 560,
-    "timeWeek": 603,
-    "timeMonth": 610,
-    "timeYear": 610,
+    "time": 608,
+    "timeDay": 559,
+    "timeWeek": 585,
+    "timeMonth": 608,
+    "timeYear": 608,
     "dailyMinutesDown": {
       "2026-08-01": 5
     }
@@ -320,11 +320,11 @@
     "uptimeWeek": "100.00%",
     "uptimeMonth": "99.98%",
     "uptimeYear": "99.98%",
-    "time": 514,
-    "timeDay": 261,
-    "timeWeek": 484,
-    "timeMonth": 514,
-    "timeYear": 514,
+    "time": 503,
+    "timeDay": 251,
+    "timeWeek": 445,
+    "timeMonth": 503,
+    "timeYear": 503,
     "dailyMinutesDown": {
       "2026-08-01": 5
     }
