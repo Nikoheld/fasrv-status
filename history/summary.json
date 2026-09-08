@@ -24,21 +24,22 @@
     "url": "https://home.fasrv.ch",
     "icon": "https://icons.duckduckgo.com/ip3/home.fasrv.ch.ico",
     "slug": "home-assistant",
-    "status": "up",
-    "uptime": "99.90%",
-    "uptimeDay": "98.47%",
-    "uptimeWeek": "99.78%",
+    "status": "down",
+    "uptime": "99.89%",
+    "uptimeDay": "98.41%",
+    "uptimeWeek": "99.77%",
     "uptimeMonth": "99.93%",
-    "uptimeYear": "99.90%",
-    "time": 837,
-    "timeDay": 2310,
-    "timeWeek": 1231,
-    "timeMonth": 865,
-    "timeYear": 837,
+    "uptimeYear": "99.89%",
+    "time": 860,
+    "timeDay": 2219,
+    "timeWeek": 1302,
+    "timeMonth": 895,
+    "timeYear": 860,
     "dailyMinutesDown": {
       "2026-08-02": 28,
       "2026-08-22": 7,
-      "2026-09-07": 22
+      "2026-09-07": 22,
+      "2026-09-08": 1
     }
   },
   {
