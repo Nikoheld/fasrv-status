@@ -89,23 +89,23 @@
     "url": "https://galerie.fasrv.ch/api/server/ping",
     "icon": "https://icons.duckduckgo.com/ip3/galerie.fasrv.ch.ico",
     "slug": "immich",
-    "status": "down",
+    "status": "up",
     "uptime": "99.70%",
-    "uptimeDay": "99.98%",
-    "uptimeWeek": "100.00%",
-    "uptimeMonth": "99.54%",
+    "uptimeDay": "99.94%",
+    "uptimeWeek": "99.99%",
+    "uptimeMonth": "99.53%",
     "uptimeYear": "99.70%",
-    "time": 714,
-    "timeDay": 570,
-    "timeWeek": 705,
-    "timeMonth": 683,
-    "timeYear": 714,
+    "time": 713,
+    "timeDay": 590,
+    "timeWeek": 697,
+    "timeMonth": 681,
+    "timeYear": 713,
     "dailyMinutesDown": {
       "2026-08-02": 27,
       "2026-08-22": 6,
       "2026-09-04": 5,
       "2026-09-09": 198,
-      "2026-09-24": 0
+      "2026-09-24": 1
     }
   },
   {
