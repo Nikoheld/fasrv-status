@@ -213,11 +213,11 @@
     "icon": "https://icons.duckduckgo.com/ip3/kavita.fasrv.ch.ico",
     "slug": "kavita",
     "status": "down",
-    "uptime": "98.48%",
-    "uptimeDay": "99.98%",
-    "uptimeWeek": "84.63%",
-    "uptimeMonth": "96.41%",
-    "uptimeYear": "98.48%",
+    "uptime": "98.40%",
+    "uptimeDay": "93.18%",
+    "uptimeWeek": "83.66%",
+    "uptimeMonth": "96.19%",
+    "uptimeYear": "98.40%",
     "time": 835,
     "timeDay": 596,
     "timeWeek": 737,
@@ -230,7 +230,7 @@
       "2026-09-26": 21,
       "2026-10-19": 1394,
       "2026-10-18": 155,
-      "2026-10-21": 0
+      "2026-10-21": 98
     }
   },
   {
